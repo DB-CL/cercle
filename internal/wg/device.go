@@ -116,7 +116,15 @@ func New(opts Options) (*Device, error) {
 	}
 	logger := &device.Logger{
 		Verbosef: func(format string, args ...any) { log.Debug(fmt.Sprintf(format, args...)) },
-		Errorf:   func(format string, args ...any) { log.Warn(fmt.Sprintf(format, args...)) },
+		Errorf: func(format string, args ...any) {
+			msg := fmt.Sprintf(format, args...)
+			// Normal pour une clé d'invitation en attente ou un pair pas encore localisé.
+			if strings.Contains(msg, "no known endpoint") {
+				log.Debug(msg)
+				return
+			}
+			log.Warn(msg)
+		},
 	}
 	dev := device.NewDevice(tdev, conn.NewDefaultBind(), logger)
 	conf := fmt.Sprintf("private_key=%s\nlisten_port=%d\n", opts.PrivateKey.Hex(), opts.ListenPort)

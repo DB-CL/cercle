@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/DB-CL/cercle/internal/index"
+	"github.com/DB-CL/cercle/internal/membership"
 	"github.com/DB-CL/cercle/internal/transfer"
 )
 
@@ -58,6 +59,12 @@ type Server struct {
 	Index     *index.Index
 	Uploads   *transfer.Uploads
 	Logger    *slog.Logger
+
+	// Adhésion (J4). InviteIP dit si une adresse est celle d'une clé
+	// temporaire d'invitation : elle n'a accès qu'à POST /api/v1/join.
+	InviteIP func(ctx context.Context, ip netip.Addr) bool
+	Join     func(ctx context.Context, tempIP netip.Addr, req membership.JoinRequest) (membership.JoinResponse, error)
+	Gossip   func(ctx context.Context, from Member, t membership.Table) (membership.Table, error)
 }
 
 // FilesPage est la réponse de GET /api/v1/files.
@@ -81,16 +88,31 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/files", s.handleFiles)
 	mux.HandleFunc("GET /api/v1/tree", s.handleTree)
 	mux.HandleFunc("GET /api/v1/file", s.handleFile)
-	return s.identify(mux)
+	mux.HandleFunc("POST /api/v1/gossip", s.handleGossip)
+	join := http.HandlerFunc(s.handleJoin)
+	return s.identify(mux, join)
 }
 
 // identify rattache chaque requête à un membre par son IP source, authentifiée
-// par WireGuard. Adresse inconnue ou cercle différent : 403.
-func (s *Server) identify(next http.Handler) http.Handler {
+// par WireGuard. Une clé temporaire d'invitation n'atteint que join. Adresse
+// inconnue ou cercle différent : 403.
+func (s *Server) identify(next, join http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ap, err := netip.ParseAddrPort(r.RemoteAddr)
 		if err != nil {
 			writeError(w, http.StatusForbidden, "adresse source illisible")
+			return
+		}
+		if s.InviteIP != nil && s.InviteIP(r.Context(), ap.Addr().Unmap()) {
+			if r.Method != http.MethodPost || r.URL.Path != "/api/v1/join" || s.Join == nil {
+				writeError(w, http.StatusForbidden, "une clé d'invitation n'a accès qu'à /api/v1/join")
+				return
+			}
+			if subtle.ConstantTimeCompare([]byte(r.Header.Get(CircleHeader)), []byte(s.CircleID)) != 1 {
+				writeError(w, http.StatusForbidden, "cercle inconnu")
+				return
+			}
+			join.ServeHTTP(w, r)
 			return
 		}
 		m, ok := s.Directory.MemberByIP(ap.Addr().Unmap())
@@ -110,6 +132,51 @@ func (s *Server) identify(next http.Handler) http.Handler {
 
 func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.Info(r.Context()))
+}
+
+const maxTableBytes = 4 << 20
+
+func (s *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
+	ap, _ := netip.ParseAddrPort(r.RemoteAddr)
+	var req membership.JoinRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "demande d'adhésion illisible")
+		return
+	}
+	resp, err := s.Join(r.Context(), ap.Addr().Unmap(), req)
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusOK, resp)
+	case errors.Is(err, membership.ErrInviteUsed):
+		writeError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, membership.ErrInviteExpired):
+		writeError(w, http.StatusGone, err.Error())
+	case errors.Is(err, membership.ErrInviteUnknown):
+		writeError(w, http.StatusForbidden, err.Error())
+	default:
+		s.log().Warn("adhésion refusée", "err", err)
+		writeError(w, http.StatusBadRequest, err.Error())
+	}
+}
+
+func (s *Server) handleGossip(w http.ResponseWriter, r *http.Request) {
+	if s.Gossip == nil {
+		writeError(w, http.StatusNotFound, "gossip indisponible")
+		return
+	}
+	m, _ := MemberFrom(r.Context())
+	var t membership.Table
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxTableBytes)).Decode(&t); err != nil {
+		writeError(w, http.StatusBadRequest, "table illisible")
+		return
+	}
+	out, err := s.Gossip(r.Context(), m, t)
+	if err != nil {
+		s.log().Error("gossip", "member", m.Name, "err", err)
+		writeError(w, http.StatusInternalServerError, "erreur interne")
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // sharePath lit et valide le paramètre path ; en cas de refus, la réponse est déjà écrite.

@@ -1,8 +1,10 @@
 package peerapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -13,6 +15,7 @@ import (
 	"time"
 
 	"github.com/DB-CL/cercle/internal/index"
+	"github.com/DB-CL/cercle/internal/membership"
 )
 
 const (
@@ -48,6 +51,12 @@ func NewClient(dial DialFunc, circleID string) *Client {
 		DisableCompression:    true,
 	}
 	return &Client{http: &http.Client{Transport: tr}, circleID: circleID}
+}
+
+// WithCircle renvoie un client qui partage les connexions de c mais présente
+// un autre identifiant de cercle (le cercle est connu après l'adhésion).
+func (c *Client) WithCircle(circle string) *Client {
+	return &Client{http: c.http, circleID: circle}
 }
 
 // StatusError est une réponse HTTP autre que 2xx.
@@ -86,6 +95,48 @@ func (c *Client) Info(ctx context.Context, peer netip.Addr) (Info, error) {
 	var info Info
 	err := c.getJSON(ctx, peer, "/api/v1/info", &info)
 	return info, err
+}
+
+// Join envoie une demande d'adhésion (avec la clé temporaire). Les refus
+// connus sont rendus sous forme d'erreurs de membership.
+func (c *Client) Join(ctx context.Context, inviter netip.Addr, req membership.JoinRequest) (membership.JoinResponse, error) {
+	var resp membership.JoinResponse
+	err := c.postJSON(ctx, inviter, "/api/v1/join", req, &resp)
+	var se *StatusError
+	if errors.As(err, &se) {
+		switch se.Code {
+		case http.StatusConflict:
+			return resp, membership.ErrInviteUsed
+		case http.StatusGone:
+			return resp, membership.ErrInviteExpired
+		case http.StatusForbidden:
+			return resp, membership.ErrInviteUnknown
+		}
+	}
+	return resp, err
+}
+
+// Gossip envoie la table locale et renvoie celle du pair après fusion.
+func (c *Client) Gossip(ctx context.Context, peer netip.Addr, t membership.Table) (membership.Table, error) {
+	var out membership.Table
+	err := c.postJSON(ctx, peer, "/api/v1/gossip", t, &out)
+	return out, err
+}
+
+func (c *Client) postJSON(ctx context.Context, peer netip.Addr, path string, in, out any) error {
+	b, err := json.Marshal(in)
+	if err != nil {
+		return err
+	}
+	resp, err := c.doHeader(ctx, http.MethodPost, peer, path, bytes.NewReader(b), http.Header{"Content-Type": {"application/json"}})
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return fmt.Errorf("réponse de %v illisible (%s) : %w", peer, path, err)
+	}
+	return nil
 }
 
 // Files lit une page du contenu d'un dossier distant ("" = racine).

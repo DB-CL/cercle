@@ -44,10 +44,6 @@ type Config struct {
 	DataDir      string
 	ShareDir     string
 	DownloadsDir string
-
-	// StaticConfig pointe vers un fichier JSON de pairs statiques.
-	// Temporaire : sert au jalon J1 et disparaît avec l'adhésion (J4).
-	StaticConfig string
 }
 
 // Load lit la configuration. getenv vaut en général os.Getenv ; les tests
@@ -74,7 +70,6 @@ func Load(getenv func(string) string) (Config, error) {
 		DataDir:             p.str("DATA_DIR", "/data"),
 		ShareDir:            p.str("SHARE_DIR", "/share"),
 		DownloadsDir:        p.str("DOWNLOADS_DIR", "/downloads"),
-		StaticConfig:        getenv("STATIC_CONFIG"),
 	}
 	if err := errors.Join(p.errs...); err != nil {
 		return Config{}, fmt.Errorf("configuration invalide : %w", err)

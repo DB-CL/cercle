@@ -2,8 +2,6 @@ package config
 
 import (
 	"log/slog"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -129,24 +127,6 @@ func TestWindow(t *testing.T) {
 	}
 	if _, err := ParseWindow("18:00-24:00"); err != nil {
 		t.Errorf("24:00 doit être accepté comme fin : %v", err)
-	}
-}
-
-func TestLoadStatic(t *testing.T) {
-	dir := t.TempDir()
-	write := func(s string) string {
-		p := filepath.Join(dir, "static.json")
-		if err := os.WriteFile(p, []byte(s), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		return p
-	}
-	s, err := LoadStatic(write(`{"circle_id":"c1","tunnel_ip":"10.42.0.1","peers":[{"name":"bob","public_key":"x","tunnel_ip":"10.42.0.2","endpoint":"bob.example:51820"}]}`))
-	if err != nil || len(s.Peers) != 1 || s.Peers[0].Endpoint != "bob.example:51820" {
-		t.Fatalf("LoadStatic = %+v, %v", s, err)
-	}
-	if _, err := LoadStatic(write(`{"circle_id":"c1","tunnel_ip":"10.42.0.1","peers":[{"name":"bob","public_key":"x","tunnel_ip":"10.42.0.1"}]}`)); err == nil {
-		t.Error("adresse en double : erreur attendue")
 	}
 }
 
