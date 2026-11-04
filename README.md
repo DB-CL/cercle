@@ -2,7 +2,7 @@
 
 Partage privé de fichiers entre les NAS d'un petit groupe d'amis, à travers un réseau WireGuard embarqué dans l'application. Spécification complète : [PRD.md](PRD.md).
 
-Le projet est en cours de développement : seul le jalon J1 (tunnel) est livré. L'installation pour les membres sera documentée au jalon J6.
+Le projet est en cours de développement : les jalons J1 (tunnel) et J2 (partage) sont livrés. L'installation pour les membres sera documentée au jalon J6.
 
 ## Développement
 
@@ -60,6 +60,33 @@ Pas encore de mesure sur arm64 : il faut un vrai NAS, l'émulation QEMU ne dit r
 
 ## État
 
+### J2 : partage (livré le 4 novembre 2026)
+
+Ce qui marche :
+
+- Base SQLite (`/data/cercle.db`) en WAL, une seule connexion d'écriture, migrations numérotées embarquées dans le binaire.
+- Scan du partage : au démarrage, puis toutes les `SCAN_INTERVAL`. Une seule goroutine, aucune lecture de contenu. Exclusions du PRD et `SHARE_EXCLUDE` (motif testé sur le nom et sur le chemin). Taille et nombre de fichiers cumulés par dossier.
+- `GET /api/v1/files` (pages de 500, dossiers d'abord puis nom sans tenir compte de la casse), `GET /api/v1/tree` (NDJSON), `GET /api/v1/file` (`Range`, `If-Range`, `ETag` = `"<taille>-<mtime_ns>"`).
+- Confinement des chemins : `..`, chemin absolu et octet nul refusés (`400`). Seuls les fichiers présents dans l'index sont servis (un fichier caché ou exclu donne `404`, même si l'on devine son nom). `os.Root` interdit toute sortie du partage, liens symboliques compris.
+- Brides d'upload réglables à chaud : débit total partagé (`UPLOAD_LIMIT`), `MAX_UPLOADS` (`503` + `Retry-After: 60` au-delà), `UPLOAD_WINDOW` (`503` + `Retry-After` jusqu'à l'ouverture).
+- Réglages en base prioritaires sur l'environnement (`ApplySettings`), prêts pour l'interface de J5.
+- `GET /api/v1/info` renvoie la taille, le nombre de fichiers et la date du dernier scan.
+
+Mesures :
+
+| Test | Résultat | Cible du PRD |
+| --- | --- | --- |
+| Scan de 500 000 fichiers | 13 s, 18 Mio de mémoire au maximum | moins de 200 Mio |
+| Rescan des mêmes 500 000 fichiers | 16 s | |
+| Liste d'un dossier dans cet index | 0,5 ms | moins de 200 ms |
+| `UPLOAD_LIMIT=10M`, 3 téléchargeurs | 10,07 Mio/s au total | 9 à 11 |
+
+Écarts au PRD :
+
+- Colonne `name` ajoutée à `files`, pour trier sans recalculer le nom.
+- Les suffixes de débit sont en puissances de 1024 : `10M` = 10 Mio/s.
+- Liens symboliques : vers un fichier du partage, indexé ; vers un dossier, ignoré (risque de boucle) ; sortant du partage, ignoré.
+
 ### J1 : tunnel (livré le 4 novembre 2026)
 
 Ce qui marche :
@@ -83,12 +110,17 @@ Ce qui manque ou reste à surveiller :
 - `go test -race` signale une course **dans wireguard-go** (`conn.StdNetEndpoint.ClearSrc` contre `setSrcControl`, cache d'adresse source). Elle est sans gravité, mais elle fera échouer une CI qui lance `-race` sur `internal/wg`.
 - Le premier contact entre deux nœuds démarrés en même temps prend environ 5 s : la première poignée de main se perd, puis WireGuard la réessaie.
 
-### Points à trancher avant J4
+### Décisions pour les jalons suivants
 
-Issus de la relecture du PRD du 4 novembre 2026 :
+Prises le 4 novembre 2026 après relecture du PRD ; elles l'emportent sur lui là où elles le contredisent.
 
-1. Endpoints observés : le PRD les met dans la fiche du pair observé, alors que seul ce pair peut incrémenter sa version. À la place, chaque nœud publie ce qu'il observe dans sa propre fiche.
-2. Bascule de clé à l'invitation : remplacer la clé temporaire au même `allowed_ip` crée une course avec la réponse de `/join`. Solution : une adresse temporaire pour la clé temporaire, la vraie clé directement sur l'adresse attribuée.
-3. Attribution d'adresse : « prochaine adresse libre » fait entrer en collision deux invitations simultanées presque à coup sûr. Un tirage aléatoire parmi les adresses libres, avec un départage stable (`joined_at` puis `node_id`), les rend rares. Un changement d'adresse oblige à recréer le netstack.
-4. Révocation : `revoked` doit être absorbant à la fusion, indépendamment de la version.
-5. HMAC à clé de groupe : il ne prouve que « écrit par un membre », ce que WireGuard garantit déjà. Une signature Ed25519 par nœud (bibliothèque standard) rend réellement applicable la règle « seul le nœud concerné modifie sa fiche ».
+- **J3** : les chemins reçus d'un pair et son nom sont confinés sous `/downloads` (`os.Root`). Un `503` respecte le `Retry-After` sans passer par le backoff ni compter comme un échec.
+- **J4, endpoints observés** : chaque nœud publie ce qu'il observe dans sa propre fiche, et non dans celle du pair observé.
+- **J4, invitation** : la clé temporaire reçoit une adresse temporaire, et la vraie clé est enregistrée directement sur l'adresse attribuée. Il n'y a donc aucune bascule de clé sur une même adresse.
+- **J4, adresses** : tirage au hasard parmi les adresses libres, départage par `joined_at` puis `node_id`.
+- **J4, révocation** : `revoked` l'emporte à la fusion, quelle que soit la version.
+- **J4, intégrité des fiches** : signature Ed25519 par nœud (bibliothèque standard) à la place du HMAC à clé de groupe. Une révocation est signée par le membre qui la prononce. La rotation de la clé de groupe devient inutile.
+- **Droits** : tout membre peut inviter et révoquer, comme dans le PRD.
+- **Plusieurs dossiers partagés** : déjà possible, en montant plusieurs volumes sous `/share` (`/share/films`, `/share/musique`).
+
+Question encore ouverte : combien de membres peuvent ouvrir un port UDP sur leur box. La réponse décidera s'il faut un relais après la v1.

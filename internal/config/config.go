@@ -214,3 +214,80 @@ func (p *parser) level(name string) slog.Level {
 	}
 	return l
 }
+
+// Clés des réglages modifiables depuis l'interface, stockés en base.
+const (
+	SettingNodeName            = "node_name"
+	SettingUploadLimit         = "upload_limit"
+	SettingMaxUploads          = "max_uploads"
+	SettingUploadWindow        = "upload_window"
+	SettingDownloadLimit       = "download_limit"
+	SettingDownloadConcurrency = "download_concurrency"
+	SettingDownloadWindow      = "download_window"
+)
+
+// ApplySettings remplace les valeurs de l'environnement par celles stockées en
+// base : après la première modification depuis l'interface, la base prime.
+// Une valeur vide pour un créneau signifie « toujours ouvert ».
+func (c *Config) ApplySettings(get func(key string) (string, bool, error)) error {
+	var errs []error
+	apply := func(key string, set func(string) error) {
+		v, ok, err := get(key)
+		if err != nil {
+			errs = append(errs, err)
+			return
+		}
+		if !ok {
+			return
+		}
+		if err := set(v); err != nil {
+			errs = append(errs, fmt.Errorf("réglage %s=%q : %w", key, v, err))
+		}
+	}
+	rateSetter := func(dst *int64) func(string) error {
+		return func(v string) error {
+			n, err := ParseRate(v)
+			if err == nil {
+				*dst = n
+			}
+			return err
+		}
+	}
+	intSetter := func(dst *int) func(string) error {
+		return func(v string) error {
+			n, err := strconv.Atoi(v)
+			if err != nil || n < 1 {
+				return errors.New("entier positif attendu")
+			}
+			*dst = n
+			return nil
+		}
+	}
+	windowSetter := func(dst **Window) func(string) error {
+		return func(v string) error {
+			if strings.TrimSpace(v) == "" {
+				*dst = nil
+				return nil
+			}
+			w, err := ParseWindow(v)
+			if err == nil {
+				*dst = &w
+			}
+			return err
+		}
+	}
+	apply(SettingNodeName, func(v string) error {
+		if strings.TrimSpace(v) == "" {
+			return errors.New("nom vide")
+		}
+		c.NodeName = v
+		return nil
+	})
+	apply(SettingUploadLimit, rateSetter(&c.UploadLimit))
+	apply(SettingMaxUploads, intSetter(&c.MaxUploads))
+	apply(SettingUploadWindow, windowSetter(&c.UploadWindow))
+	apply(SettingDownloadLimit, rateSetter(&c.DownloadLimit))
+	apply(SettingDownloadConcurrency, intSetter(&c.DownloadConcurrency))
+	apply(SettingDownloadWindow, windowSetter(&c.DownloadWindow))
+	return errors.Join(errs...)
+}

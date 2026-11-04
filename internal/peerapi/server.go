@@ -12,7 +12,11 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"strconv"
 	"time"
+
+	"github.com/DB-CL/cercle/internal/index"
+	"github.com/DB-CL/cercle/internal/transfer"
 )
 
 // Port est le port TCP de l'API, sur l'adresse de tunnel.
@@ -47,7 +51,15 @@ type Server struct {
 	CircleID  string
 	Directory Directory
 	Info      func(ctx context.Context) Info
+	Index     *index.Index
+	Uploads   *transfer.Uploads
 	Logger    *slog.Logger
+}
+
+// FilesPage est la réponse de GET /api/v1/files.
+type FilesPage struct {
+	Entries []index.Entry `json:"entries"`
+	Next    string        `json:"next,omitempty"`
 }
 
 type ctxKey struct{}
@@ -62,6 +74,9 @@ func MemberFrom(ctx context.Context) (Member, bool) {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/info", s.handleInfo)
+	mux.HandleFunc("GET /api/v1/files", s.handleFiles)
+	mux.HandleFunc("GET /api/v1/tree", s.handleTree)
+	mux.HandleFunc("GET /api/v1/file", s.handleFile)
 	return s.identify(mux)
 }
 
@@ -91,6 +106,98 @@ func (s *Server) identify(next http.Handler) http.Handler {
 
 func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.Info(r.Context()))
+}
+
+// sharePath lit et valide le paramètre path ; en cas de refus, la réponse est déjà écrite.
+func (s *Server) sharePath(w http.ResponseWriter, r *http.Request) (string, bool) {
+	p, err := index.CleanPath(r.URL.Query().Get("path"))
+	if err != nil {
+		m, _ := MemberFrom(r.Context())
+		s.log().Warn("chemin refusé", "member", m.Name, "path", r.URL.Query().Get("path"))
+		writeError(w, http.StatusBadRequest, "chemin refusé")
+		return "", false
+	}
+	return p, true
+}
+
+// indexError traduit une erreur de l'index en réponse HTTP.
+func (s *Server) indexError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, index.ErrNotFound):
+		writeError(w, http.StatusNotFound, "introuvable")
+	case errors.Is(err, index.ErrBadPath):
+		writeError(w, http.StatusBadRequest, "chemin refusé")
+	default:
+		s.log().Error("erreur de l'index", "err", err)
+		writeError(w, http.StatusInternalServerError, "erreur interne")
+	}
+}
+
+func (s *Server) handleFiles(w http.ResponseWriter, r *http.Request) {
+	p, ok := s.sharePath(w, r)
+	if !ok {
+		return
+	}
+	entries, next, err := s.Index.List(r.Context(), p, r.URL.Query().Get("cursor"), index.PageSize)
+	if err != nil {
+		s.indexError(w, err)
+		return
+	}
+	if entries == nil {
+		entries = []index.Entry{}
+	}
+	writeJSON(w, http.StatusOK, FilesPage{Entries: entries, Next: next})
+}
+
+// handleTree renvoie en NDJSON tous les fichiers sous un chemin.
+func (s *Server) handleTree(w http.ResponseWriter, r *http.Request) {
+	p, ok := s.sharePath(w, r)
+	if !ok {
+		return
+	}
+	if _, err := s.Index.Lookup(r.Context(), p); err != nil {
+		s.indexError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	enc := json.NewEncoder(w)
+	err := s.Index.Tree(r.Context(), p, func(e index.Entry) error { return enc.Encode(e) })
+	if err != nil {
+		// Les en-têtes sont partis : on coupe, le client verra un flux tronqué.
+		s.log().Warn("arborescence interrompue", "path", p, "err", err)
+		panic(http.ErrAbortHandler)
+	}
+}
+
+// handleFile sert un fichier avec Range et If-Range, bridé par les limites d'upload.
+func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
+	p, ok := s.sharePath(w, r)
+	if !ok {
+		return
+	}
+	release, retry, ok := s.Uploads.Acquire()
+	if !ok {
+		w.Header().Set("Retry-After", strconv.Itoa(int(retry/time.Second)))
+		writeError(w, http.StatusServiceUnavailable, "uploads indisponibles, réessayer plus tard")
+		return
+	}
+	defer release()
+	f, info, err := s.Index.Open(r.Context(), p)
+	if err != nil {
+		s.indexError(w, err)
+		return
+	}
+	defer f.Close()
+	m, _ := MemberFrom(r.Context())
+	s.log().Info("envoi", "member", m.Name, "path", p, "range", r.Header.Get("Range"))
+	w.Header().Set("ETag", ETag(info.Size(), info.ModTime()))
+	w.Header().Set("Content-Type", "application/octet-stream")
+	http.ServeContent(w, r, "", info.ModTime(), s.Uploads.Reader(r.Context(), f))
+}
+
+// ETag identifie une version d'un fichier : taille et date en nanosecondes.
+func ETag(size int64, mtime time.Time) string {
+	return `"` + strconv.FormatInt(size, 10) + "-" + strconv.FormatInt(mtime.UnixNano(), 10) + `"`
 }
 
 // Serve sert l'API sur l'écouteur du tunnel jusqu'à l'annulation de ctx, puis

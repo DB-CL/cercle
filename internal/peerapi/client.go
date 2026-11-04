@@ -8,8 +8,11 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"strconv"
 	"time"
+
+	"github.com/DB-CL/cercle/internal/index"
 )
 
 const (
@@ -63,6 +66,40 @@ func (c *Client) Info(ctx context.Context, peer netip.Addr) (Info, error) {
 	var info Info
 	err := c.getJSON(ctx, peer, "/api/v1/info", &info)
 	return info, err
+}
+
+// Files lit une page du contenu d'un dossier distant ("" = racine).
+func (c *Client) Files(ctx context.Context, peer netip.Addr, dir, cursor string) (FilesPage, error) {
+	q := url.Values{"path": {dir}}
+	if cursor != "" {
+		q.Set("cursor", cursor)
+	}
+	var page FilesPage
+	err := c.getJSON(ctx, peer, "/api/v1/files?"+q.Encode(), &page)
+	return page, err
+}
+
+// Tree appelle fn pour chaque fichier distant sous dir.
+func (c *Client) Tree(ctx context.Context, peer netip.Addr, dir string, fn func(index.Entry) error) error {
+	resp, err := c.do(ctx, http.MethodGet, peer, "/api/v1/tree?"+url.Values{"path": {dir}}.Encode(), nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	dec := json.NewDecoder(resp.Body)
+	for {
+		var e index.Entry
+		err := dec.Decode(&e)
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("arborescence de %v illisible : %w", peer, err)
+		}
+		if err := fn(e); err != nil {
+			return err
+		}
+	}
 }
 
 func (c *Client) do(ctx context.Context, method string, peer netip.Addr, path string, body io.Reader) (*http.Response, error) {

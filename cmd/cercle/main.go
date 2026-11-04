@@ -15,13 +15,17 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 	_ "time/tzdata" // l'image scratch n'a pas de zoneinfo
 
 	"github.com/DB-CL/cercle/internal/buildinfo"
 	"github.com/DB-CL/cercle/internal/config"
+	"github.com/DB-CL/cercle/internal/index"
 	"github.com/DB-CL/cercle/internal/peerapi"
+	"github.com/DB-CL/cercle/internal/store"
+	"github.com/DB-CL/cercle/internal/transfer"
 	"github.com/DB-CL/cercle/internal/wg"
 )
 
@@ -75,7 +79,25 @@ func serve() error {
 	if err != nil {
 		return err
 	}
+	db, err := store.Open(ctx, filepath.Join(cfg.DataDir, "cercle.db"))
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	if err := cfg.ApplySettings(func(k string) (string, bool, error) { return db.Setting(ctx, k) }); err != nil {
+		return err
+	}
 	log.Info("démarrage", "version", buildinfo.String(), "node", cfg.NodeName, "public_key", key.Public().String())
+
+	// Toutes les goroutines de fond s'arrêtent avec ctx ; on les attend avant de fermer la base.
+	var bg sync.WaitGroup
+	defer bg.Wait()
+	// Annulé avant bg.Wait (ordre inverse des defer) : une sortie sur erreur ne bloque pas.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	ix := index.New(db, cfg.ShareDir, cfg.ShareExclude, log)
+	bg.Go(func() { ix.Run(ctx, cfg.ScanInterval) })
+	uploads := transfer.NewUploads(cfg.UploadLimit, cfg.MaxUploads, cfg.UploadWindow)
 
 	// J1 : cercle figé par fichier. L'adhésion (J4) remplacera ce bloc.
 	if cfg.StaticConfig == "" {
@@ -107,12 +129,15 @@ func serve() error {
 	srv := &peerapi.Server{
 		CircleID:  st.CircleID,
 		Directory: dir,
-		Info: func(context.Context) peerapi.Info {
-			return peerapi.Info{Name: cfg.NodeName, Version: buildinfo.Version}
+		Info: func(ctx context.Context) peerapi.Info {
+			size, files, last := ix.Totals(ctx)
+			return peerapi.Info{Name: cfg.NodeName, Version: buildinfo.Version, ShareSize: size, ShareFiles: files, LastScan: last}
 		},
-		Logger: log.With("module", "peerapi"),
+		Index:   ix,
+		Uploads: uploads,
+		Logger:  log.With("module", "peerapi"),
 	}
-	go probe(ctx, log, dev, peerapi.NewClient(dev.DialContext, st.CircleID), dir)
+	bg.Go(func() { probe(ctx, log, dev, peerapi.NewClient(dev.DialContext, st.CircleID), dir) })
 
 	err = srv.Serve(ctx, l)
 	log.Info("arrêt")
@@ -181,7 +206,7 @@ func probe(ctx context.Context, log *slog.Logger, dev *wg.Device, c *peerapi.Cli
 				log.Info("pair injoignable", "peer", m.Name, "err", err)
 				continue
 			}
-			log.Info("pair en ligne", "peer", m.Name, "name", info.Name, "version", info.Version)
+			log.Info("pair en ligne", "peer", m.Name, "name", info.Name, "version", info.Version, "share_files", info.ShareFiles, "share_size", info.ShareSize)
 		}
 		if st, err := dev.Peers(); err == nil {
 			for _, p := range st {

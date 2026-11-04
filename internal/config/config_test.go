@@ -149,3 +149,22 @@ func TestLoadStatic(t *testing.T) {
 		t.Error("adresse en double : erreur attendue")
 	}
 }
+
+func TestApplySettings(t *testing.T) {
+	c, err := Load(env(map[string]string{"UPLOAD_LIMIT": "10M", "UPLOAD_WINDOW": "01:00-07:00", "MAX_UPLOADS": "3"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := map[string]string{SettingUploadLimit: "20M", SettingUploadWindow: "", SettingNodeName: "alice-nas"}
+	err = c.ApplySettings(func(k string) (string, bool, error) { v, ok := stored[k]; return v, ok, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.UploadLimit != 20<<20 || c.UploadWindow != nil || c.MaxUploads != 3 || c.NodeName != "alice-nas" {
+		t.Fatalf("après réglages : %+v", c)
+	}
+	stored[SettingMaxUploads] = "zéro"
+	if err := c.ApplySettings(func(k string) (string, bool, error) { v, ok := stored[k]; return v, ok, nil }); err == nil {
+		t.Fatal("réglage invalide accepté")
+	}
+}
