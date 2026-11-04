@@ -2,3 +2,4 @@
 *.out
 *.test
 .race.log
+deploy/e2e-data/

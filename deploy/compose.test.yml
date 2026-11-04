@@ -1,0 +1,38 @@
+# Test de bout en bout : 5 nœuds sur un réseau bridge Docker. Lancé par deploy/e2e.sh.
+x-node: &node
+  image: ${CERCLE_IMAGE:-cercle:e2e}
+  user: "${CERCLE_UID:-65532}:${CERCLE_GID:-65532}"
+  read_only: true
+  tmpfs:
+    - /tmp
+  environment: &env
+    UI_PASSWORD: e2e
+    LOG_LEVEL: info
+    TZ: Europe/Paris
+
+services:
+  node1:
+    <<: *node
+    environment: { <<: *env, NODE_NAME: node1, WG_PUBLIC_ENDPOINTS: "node1:51820" }
+    ports: ["127.0.0.1:18181:8080"]
+    volumes: ["./e2e-data/node1/share:/share:ro", "./e2e-data/node1/data:/data", "./e2e-data/node1/downloads:/downloads"]
+  node2:
+    <<: *node
+    environment: { <<: *env, NODE_NAME: node2, WG_PUBLIC_ENDPOINTS: "node2:51820" }
+    ports: ["127.0.0.1:18182:8080"]
+    volumes: ["./e2e-data/node2/share:/share:ro", "./e2e-data/node2/data:/data", "./e2e-data/node2/downloads:/downloads"]
+  node3:
+    <<: *node
+    environment: { <<: *env, NODE_NAME: node3, WG_PUBLIC_ENDPOINTS: "node3:51820" }
+    ports: ["127.0.0.1:18183:8080"]
+    volumes: ["./e2e-data/node3/share:/share:ro", "./e2e-data/node3/data:/data", "./e2e-data/node3/downloads:/downloads"]
+  node4:
+    <<: *node
+    environment: { <<: *env, NODE_NAME: node4, WG_PUBLIC_ENDPOINTS: "node4:51820" }
+    ports: ["127.0.0.1:18184:8080"]
+    volumes: ["./e2e-data/node4/share:/share:ro", "./e2e-data/node4/data:/data", "./e2e-data/node4/downloads:/downloads"]
+  node5:
+    <<: *node
+    environment: { <<: *env, NODE_NAME: node5, WG_PUBLIC_ENDPOINTS: "node5:51820" }
+    ports: ["127.0.0.1:18185:8080"]
+    volumes: ["./e2e-data/node5/share:/share:ro", "./e2e-data/node5/data:/data", "./e2e-data/node5/downloads:/downloads"]

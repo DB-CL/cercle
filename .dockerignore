@@ -1,0 +1,5 @@
+.git
+.bin
+deploy/e2e-data
+*.out
+*.test

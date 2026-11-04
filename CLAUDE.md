@@ -8,3 +8,4 @@
 - Commits en français, sans mention de Claude ni ligne Co-Authored-By.
 - Français : pas de tiret cadratin, utiliser : ; , ou des parenthèses.
 - Le port UDP 51820 est déjà pris sur la machine de dev (WireGuard de Cyril) : tester sur 51830 et plus.
+- Bout en bout : `deploy/e2e.sh` (5 conteneurs, environ 2 min). Image : `docker build --network host -f deploy/Dockerfile -t cercle .`

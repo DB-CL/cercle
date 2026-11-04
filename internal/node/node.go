@@ -16,6 +16,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"slices"
 	"sort"
 	"sync"
@@ -212,6 +213,7 @@ func (n *Node) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-t.C:
+			n.releaseMemoryIfIdle(ctx)
 		case <-n.kick:
 			// Pas plus d'un tour par demi-seconde, même si les changements s'enchaînent.
 			if d := 500*time.Millisecond - time.Since(last); d > 0 {
@@ -223,6 +225,19 @@ func (n *Node) Run(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+// releaseMemoryIfIdle rend au système la mémoire gardée après des transferts
+// (tampons de WireGuard et de la pile TCP), si aucun n'est en cours. Sans cela,
+// le runtime Go la garde plusieurs minutes et un nœud au repos dépasse 70 Mo.
+func (n *Node) releaseMemoryIfIdle(ctx context.Context) {
+	if _, _, _, uploads := n.up.Limits(); uploads > 0 {
+		return
+	}
+	if active, err := n.queue.Active(ctx); err != nil || len(active) > 0 {
+		return
+	}
+	debug.FreeOSMemory()
 }
 
 // startDevice démarre le tunnel sur addr et l'API pair-à-pair dessus.

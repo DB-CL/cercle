@@ -1,19 +1,23 @@
 // Commande cercle : partage privé de fichiers entre NAS sur WireGuard.
 //
-//	cercle serve    démarre le nœud (par défaut)
-//	cercle pubkey   affiche la clé publique du nœud (la crée au besoin)
-//	cercle version  affiche la version
+//	cercle serve        démarre le nœud (par défaut)
+//	cercle healthcheck  interroge l'interface locale (HEALTHCHECK de l'image, sans curl)
+//	cercle pubkey       affiche la clé publique du nœud (la crée au besoin)
+//	cercle version      affiche la version
 package main
 
 import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"sync"
 	"syscall"
+	"time"
 	_ "time/tzdata" // l'image scratch n'a pas de zoneinfo
 
 	"github.com/DB-CL/cercle/internal/buildinfo"
@@ -32,17 +36,44 @@ func main() {
 	switch cmd {
 	case "serve":
 		err = serve()
+	case "healthcheck":
+		err = healthcheck()
 	case "pubkey":
 		err = pubkey()
 	case "version":
 		fmt.Println(buildinfo.String())
 	default:
-		err = fmt.Errorf("sous-commande inconnue %q (serve, pubkey, version)", cmd)
+		err = fmt.Errorf("sous-commande inconnue %q (serve, healthcheck, pubkey, version)", cmd)
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cercle :", err)
 		os.Exit(1)
 	}
+}
+
+// healthcheck interroge GET /healthz de l'interface locale : 0 si elle répond.
+func healthcheck() error {
+	cfg, err := config.Load(os.Getenv)
+	if err != nil {
+		return err
+	}
+	host, port, err := net.SplitHostPort(cfg.UIListen)
+	if err != nil {
+		return fmt.Errorf("UI_LISTEN illisible : %w", err)
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	c := http.Client{Timeout: 3 * time.Second}
+	resp, err := c.Get("http://" + net.JoinHostPort(host, port) + "/healthz")
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("interface : %s", resp.Status)
+	}
+	return nil
 }
 
 func pubkey() error {
