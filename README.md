@@ -2,7 +2,7 @@
 
 Partage privé de fichiers entre les NAS d'un petit groupe d'amis, à travers un réseau WireGuard embarqué dans l'application. Spécification complète : [PRD.md](PRD.md).
 
-Le projet est en cours de développement : les jalons J1 (tunnel) et J2 (partage) sont livrés. L'installation pour les membres sera documentée au jalon J6.
+Le projet est en cours de développement : les jalons J1 (tunnel), J2 (partage) et J3 (téléchargement) sont livrés. L'installation pour les membres sera documentée au jalon J6.
 
 ## Développement
 
@@ -59,6 +59,35 @@ Mesures du 4 novembre 2026, AMD Ryzen 7 2700X, transfert TCP de 512 Mio :
 Pas encore de mesure sur arm64 : il faut un vrai NAS, l'émulation QEMU ne dit rien des performances.
 
 ## État
+
+### J3 : téléchargement (livré le 4 novembre 2026)
+
+Ce qui marche :
+
+- File persistante en base. Un dossier mis en file est développé en fichiers au moment de l'ajout. Un fichier déjà présent avec la même taille est marqué terminé sans transfert, et une remise en file ne crée pas de doublon.
+- `DOWNLOAD_CONCURRENCY` transferts au total, un seul par pair. Ordre : priorité, puis date d'ajout.
+- Reprise : écriture dans `<destination>.part`, reprise par `Range` et `If-Range`. Si le fichier a changé chez le pair, le transfert repart de zéro avec la nouvelle version. À la fin : vérification de la taille, `fsync`, renommage atomique, date de modification distante à la nanoseconde (en-tête `X-Cercle-Mtime`).
+- Erreurs : coupure ou pair injoignable donnent un nouvel essai après 30 s, puis ×2, plafonné à 15 min, sans limite de tentatives. Un `503` attend le `Retry-After` du pair sans compter d'échec. Un `404`, un chemin refusé ou un pair inconnu mettent l'élément en erreur définitive.
+- `DOWNLOAD_LIMIT` (débit total) et `DOWNLOAD_WINDOW`, réglables à chaud.
+- Actions : pause, reprise, priorité haute, retrait (avec ou sans suppression du `.part`), relance d'une erreur.
+- Redémarrage : la file est conservée et les transferts interrompus reprennent au bon octet.
+- Confinement côté réception : chaque chemin reçu d'un pair est revalidé, le nom du pair est rendu sûr pour servir de dossier (`../../etc` devient `_.._etc`), et toutes les écritures passent par `os.Root` sur `/downloads`.
+
+Mesures (tunnel WireGuard réel, deux nœuds dans le même processus) :
+
+| Test | Résultat |
+| --- | --- |
+| 501 fichiers (dont un de 20 Mio) mis en file puis téléchargés | 7,7 s, sommes de contrôle identiques |
+| 10 001 fichiers (petits, plus un de 20 Mio) | 1 min 53, sommes de contrôle identiques (environ 11 ms par fichier : une requête, un `fsync` et un renommage chacun, un seul transfert à la fois par pair) |
+
+Écarts au PRD :
+
+- Colonnes `peer_name` et `mtime` ajoutées à `queue`.
+- La fermeture du créneau de téléchargement n'interrompt pas un transfert en cours : elle empêche seulement d'en démarrer de nouveaux (même comportement que le créneau d'upload).
+- Le dossier du pair est figé à l'ajout : si le pair change de nom, ses fichiers suivants iront dans un nouveau dossier. Deux pairs de même nom partagent un dossier ; les noms seront rendus uniques en J4.
+- Un fichier local de taille différente, au même emplacement, est remplacé à la fin du téléchargement.
+
+Ce qui manque : aucun moyen de mettre en file sans l'interface (J5). En attendant, la file se teste par `go test`.
 
 ### J2 : partage (livré le 4 novembre 2026)
 

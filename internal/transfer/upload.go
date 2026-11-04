@@ -18,6 +18,10 @@ import (
 // d'attentes par seconde à 1 Gb/s, assez petit pour un débit régulier.
 const burst = 256 << 10
 
+// MtimeHeader donne la date de modification exacte (nanosecondes Unix) d'un
+// fichier servi : Last-Modified n'a qu'une précision d'une seconde.
+const MtimeHeader = "X-Cercle-Mtime"
+
 // MaxUploadsRetry est le délai proposé quand toutes les places d'upload sont prises.
 const MaxUploadsRetry = 60 * time.Second
 
@@ -116,19 +120,22 @@ type limitedReader struct {
 	l   *rate.Limiter
 }
 
-func (lr *limitedReader) Read(p []byte) (int, error) {
+func (lr *limitedReader) Read(p []byte) (int, error) { return throttledRead(lr.ctx, lr.l, lr.r, p) }
+
+func (lr *limitedReader) Seek(off int64, whence int) (int64, error) {
+	return lr.r.Seek(off, whence)
+}
+
+// throttledRead lit au plus burst octets puis attend le jeton correspondant.
+func throttledRead(ctx context.Context, l *rate.Limiter, r io.Reader, p []byte) (int, error) {
 	if len(p) > burst {
 		p = p[:burst]
 	}
-	n, err := lr.r.Read(p)
+	n, err := r.Read(p)
 	if n > 0 {
-		if werr := lr.l.WaitN(lr.ctx, n); werr != nil {
+		if werr := l.WaitN(ctx, n); werr != nil {
 			return n, werr
 		}
 	}
 	return n, err
-}
-
-func (lr *limitedReader) Seek(off int64, whence int) (int64, error) {
-	return lr.r.Seek(off, whence)
 }

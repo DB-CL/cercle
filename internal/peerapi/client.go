@@ -61,6 +61,26 @@ func (e *StatusError) Error() string {
 	return fmt.Sprintf("le pair a répondu %d : %s", e.Code, e.Message)
 }
 
+// HTTPStatus renvoie le code HTTP (interface lue par transfer, sans dépendance).
+func (e *StatusError) HTTPStatus() int { return e.Code }
+
+// RetryDelay renvoie le Retry-After du pair, 0 s'il est absent.
+func (e *StatusError) RetryDelay() time.Duration { return e.RetryAfter }
+
+// Download demande le fichier distant à partir de offset. Si offset > 0, la
+// reprise est conditionnée par etag (If-Range) : si le fichier a changé, le
+// pair renvoie 200 et le fichier entier. Le corps est à fermer par l'appelant.
+func (c *Client) Download(ctx context.Context, peer netip.Addr, path string, offset int64, etag string) (*http.Response, error) {
+	hdr := http.Header{}
+	if offset > 0 {
+		hdr.Set("Range", "bytes="+strconv.FormatInt(offset, 10)+"-")
+		if etag != "" {
+			hdr.Set("If-Range", etag)
+		}
+	}
+	return c.doHeader(ctx, http.MethodGet, peer, "/api/v1/file?"+url.Values{"path": {path}}.Encode(), nil, hdr)
+}
+
 // Info interroge GET /api/v1/info.
 func (c *Client) Info(ctx context.Context, peer netip.Addr) (Info, error) {
 	var info Info
@@ -103,10 +123,17 @@ func (c *Client) Tree(ctx context.Context, peer netip.Addr, dir string, fn func(
 }
 
 func (c *Client) do(ctx context.Context, method string, peer netip.Addr, path string, body io.Reader) (*http.Response, error) {
-	url := "http://" + netip.AddrPortFrom(peer, Port).String() + path
-	req, err := http.NewRequestWithContext(ctx, method, url, body)
+	return c.doHeader(ctx, method, peer, path, body, nil)
+}
+
+func (c *Client) doHeader(ctx context.Context, method string, peer netip.Addr, path string, body io.Reader, hdr http.Header) (*http.Response, error) {
+	target := "http://" + netip.AddrPortFrom(peer, Port).String() + path
+	req, err := http.NewRequestWithContext(ctx, method, target, body)
 	if err != nil {
 		return nil, fmt.Errorf("requête %s : %w", path, err)
+	}
+	for k, v := range hdr {
+		req.Header[k] = v
 	}
 	req.Header.Set(CircleHeader, c.circleID)
 	resp, err := c.http.Do(req)

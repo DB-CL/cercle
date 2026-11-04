@@ -137,7 +137,27 @@ func serve() error {
 		Uploads: uploads,
 		Logger:  log.With("module", "peerapi"),
 	}
-	bg.Go(func() { probe(ctx, log, dev, peerapi.NewClient(dev.DialContext, st.CircleID), dir) })
+	client := peerapi.NewClient(dev.DialContext, st.CircleID)
+	bg.Go(func() { probe(ctx, log, dev, client, dir) })
+
+	if err := os.MkdirAll(cfg.DownloadsDir, 0o755); err != nil {
+		return fmt.Errorf("dossier des téléchargements : %w", err)
+	}
+	queue := transfer.NewManager(transfer.Options{
+		Store:       db,
+		Remote:      client,
+		Peers:       dir.byID,
+		Dir:         cfg.DownloadsDir,
+		Concurrency: cfg.DownloadConcurrency,
+		Limit:       cfg.DownloadLimit,
+		Window:      cfg.DownloadWindow,
+		Logger:      log,
+	})
+	bg.Go(func() {
+		if err := queue.Run(ctx); err != nil {
+			log.Error("file de téléchargement arrêtée", "err", err)
+		}
+	})
 
 	err = srv.Serve(ctx, l)
 	log.Info("arrêt")
@@ -190,6 +210,15 @@ type staticDir map[netip.Addr]peerapi.Member
 func (d staticDir) MemberByIP(ip netip.Addr) (peerapi.Member, bool) {
 	m, ok := d[ip]
 	return m, ok
+}
+
+func (d staticDir) byID(id string) (transfer.Peer, bool) {
+	for ip, m := range d {
+		if m.NodeID == id {
+			return transfer.Peer{ID: m.NodeID, Name: m.Name, IP: ip}, true
+		}
+	}
+	return transfer.Peer{}, false
 }
 
 // probe interroge chaque pair toutes les 30 s et journalise son état. Simple

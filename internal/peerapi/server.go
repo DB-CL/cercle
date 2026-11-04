@@ -25,6 +25,10 @@ const Port = 8787
 // CircleHeader porte l'identifiant du cercle dans chaque requête.
 const CircleHeader = "X-Cercle-Circle"
 
+// MtimeHeader donne la date de modification exacte (nanosecondes Unix) d'un
+// fichier servi : Last-Modified n'a qu'une précision d'une seconde.
+const MtimeHeader = transfer.MtimeHeader
+
 // Member est un membre connu, identifié par son adresse de tunnel.
 type Member struct {
 	NodeID   string // clé publique WireGuard en base64
@@ -191,6 +195,7 @@ func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
 	m, _ := MemberFrom(r.Context())
 	s.log().Info("envoi", "member", m.Name, "path", p, "range", r.Header.Get("Range"))
 	w.Header().Set("ETag", ETag(info.Size(), info.ModTime()))
+	w.Header().Set(MtimeHeader, strconv.FormatInt(info.ModTime().UnixNano(), 10))
 	w.Header().Set("Content-Type", "application/octet-stream")
 	http.ServeContent(w, r, "", info.ModTime(), s.Uploads.Reader(r.Context(), f))
 }
