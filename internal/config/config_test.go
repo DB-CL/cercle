@@ -148,3 +148,12 @@ func TestApplySettings(t *testing.T) {
 		t.Fatal("réglage invalide accepté")
 	}
 }
+
+func TestFormatRate(t *testing.T) {
+	for _, s := range []string{"0", "512K", "20M", "1G", "1000"} {
+		n, err := ParseRate(s)
+		if err != nil || FormatRate(n) != s {
+			t.Errorf("aller-retour %q : %q, %v", s, FormatRate(n), err)
+		}
+	}
+}

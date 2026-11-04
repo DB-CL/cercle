@@ -113,3 +113,18 @@ func (w Window) NextOpen(t time.Time) time.Time {
 	}
 	return next
 }
+
+// FormatRate écrit un débit comme ParseRate le lit : « 0 », « 512K », « 20M », « 1G ».
+func FormatRate(bps int64) string {
+	switch {
+	case bps <= 0:
+		return "0"
+	case bps%(1<<30) == 0:
+		return strconv.FormatInt(bps>>30, 10) + "G"
+	case bps%(1<<20) == 0:
+		return strconv.FormatInt(bps>>20, 10) + "M"
+	case bps%(1<<10) == 0:
+		return strconv.FormatInt(bps>>10, 10) + "K"
+	}
+	return strconv.FormatInt(bps, 10)
+}

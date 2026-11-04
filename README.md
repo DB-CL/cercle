@@ -2,7 +2,7 @@
 
 Partage privé de fichiers entre les NAS d'un petit groupe d'amis, à travers un réseau WireGuard embarqué dans l'application. Spécification complète : [PRD.md](PRD.md).
 
-Le projet est en cours de développement : les jalons J1 (tunnel) à J4 (adhésion) sont livrés. L'installation pour les membres sera documentée au jalon J6.
+Le projet est en cours de développement : les jalons J1 (tunnel) à J5 (interface) sont livrés. L'installation pour les membres sera documentée au jalon J6.
 
 ## Développement
 
@@ -17,7 +17,7 @@ CGO_ENABLED=0 deploy/go.sh build -o /src/.bin/cercle ./cmd/cercle
 
 ### Essai à trois nœuds
 
-La page web arrive en J5 ; en attendant, l'interface se pilote par son API JSON.
+L'interface est sur `http://127.0.0.1:18081/` (puis 18082, 18083), mot de passe `secret`. Elle se pilote aussi par son API JSON ; toute requête qui modifie quelque chose doit porter l'en-tête `X-Cercle-UI` (protection CSRF).
 
 ```sh
 for i in 1 2 3; do
@@ -25,11 +25,12 @@ for i in 1 2 3; do
   WG_LISTEN_PORT=5183$i WG_PUBLIC_ENDPOINTS=127.0.0.1:5183$i UI_LISTEN=127.0.0.1:1808$i UI_PASSWORD=secret \
   .bin/cercle serve &
 done
-curl -u x:secret -X POST http://127.0.0.1:18081/ui/api/circle            # n1 fonde le cercle (10.42.0.1)
-curl -u x:secret -X POST http://127.0.0.1:18081/ui/api/invites           # renvoie {"code": "cercle1:…"}
-curl -u x:secret -X POST http://127.0.0.1:18082/ui/api/join -d '{"code":"cercle1:…"}'
-curl -u x:secret http://127.0.0.1:18081/ui/api/members                   # membres, en ligne, endpoints
-curl -u x:secret -X POST http://127.0.0.1:18081/ui/api/members/<node_id>/revoke
+C='curl -u x:secret -H X-Cercle-UI:1'
+$C -X POST http://127.0.0.1:18081/ui/api/circle            # n1 fonde le cercle (10.42.0.1)
+$C -X POST http://127.0.0.1:18081/ui/api/invites           # renvoie {"code": "cercle1:…"}
+$C -X POST http://127.0.0.1:18082/ui/api/join -d '{"code":"cercle1:…"}'
+$C http://127.0.0.1:18081/ui/api/members                   # membres, en ligne, endpoints
+$C -X POST http://127.0.0.1:18082/ui/api/queue -d '{"peer":"<node_id de n1>","paths":["films"]}'
 ```
 
 `DATA_DIR`, `SHARE_DIR` et `DOWNLOADS_DIR` (défauts `/data`, `/share`, `/downloads`) ne servent qu'au développement hors conteneur.
@@ -54,6 +55,31 @@ Pas encore de mesure sur arm64 : il faut un vrai NAS, l'émulation QEMU ne dit r
 
 ## État
 
+### J5 : interface (livré le 4 novembre 2026)
+
+Ce qui marche :
+
+- Page unique en français, embarquée dans le binaire (`web/` : HTML, CSS et JavaScript sans framework, sans étape de build, sans CDN). Thème clair ou sombre selon le système, utilisable sur mobile.
+- Accueil hors cercle : « Créer un cercle » ou « Rejoindre avec un code ».
+- **Membres** : en ligne ou non, adresse, taille partagée, dernière poignée de main, endpoint. Inviter (code à copier, invitations en attente annulables), révoquer, parcourir.
+- **Partage d'un membre** : fil d'Ariane, dossiers d'abord, cases à cocher conservées pendant la navigation, barre « Télécharger la sélection » avec le volume total.
+- **Téléchargements** : filtres par état avec compteurs ; progression, débit et temps restant en direct ; erreurs et prochain essai ; actions par élément ou sur une sélection ; vidage des terminés.
+- **Réglages** : nom, débits, nombre de transferts et créneaux, appliqués à chaud, avec les erreurs affichées champ par champ. État du partage avec relance du scan. État réseau (adresse, port, endpoints annoncés, clé publique, cercle).
+- API complète sous `/ui/api` : celle du PRD, plus `GET /share` et `POST /queue/actions` pour les actions groupées. Flux d'événements `GET /ui/api/events` : changements regroupés, et progression chaque seconde pendant un transfert.
+- Sécurité : `UI_PASSWORD` (authentification Basic), avec un bandeau d'avertissement s'il manque. En-tête `X-Cercle-UI` obligatoire pour toute modification (CSRF). CSP `default-src 'self'`. Aucun texte venu d'un pair n'est inséré comme HTML.
+
+Vérifications : tests Go de l'API (parcours complet entre deux nœuds, mot de passe, CSRF, flux d'événements). Chaque vue contrôlée à l'œil dans Chromium sans écran, en clair et en sombre, sur ordinateur et sur mobile, sans erreur JavaScript.
+
+Écarts au PRD :
+
+- `POST /ui/api/queue/actions` et `GET /ui/api/share` ajoutés.
+- La file s'affiche par pages de 200, filtrées par état : une file de 10 000 éléments reste fluide.
+
+Ce qui manque :
+
+- Pas de tri « naturel » des noms (IMG_2 avant IMG_10) : le tri reste alphabétique, sans tenir compte de la casse.
+- Pas de test automatique du JavaScript lui-même, au-delà de la vérification de syntaxe.
+
 ### J4 : adhésion (livré le 4 novembre 2026)
 
 Ce qui marche :
@@ -67,7 +93,7 @@ Ce qui marche :
 - Révocation : par n'importe quel membre, signée, définitive (même face à une fiche de version plus haute), conservée au redémarrage. L'adresse du révoqué n'est jamais réattribuée.
 - Conflit d'adresses : le membre entré le plus tôt garde l'adresse ; l'autre en tire une libre, republie sa fiche et redémarre son tunnel.
 - Noms en double : un suffixe tiré de l'identifiant les rend uniques (« bob (a1b2) »), y compris pour les dossiers de téléchargement.
-- Début de l'API de l'interface (prévue en J5) : `status`, `circle`, `join`, `invites`, `members`, `revoke`, avec `UI_PASSWORD` en authentification Basic. `GET /healthz` reste ouvert pour le healthcheck.
+- Début de l'API de l'interface (complétée en J5). `GET /healthz` reste ouvert pour le healthcheck.
 - La configuration statique de J1 a disparu.
 
 Critères d'acceptation vérifiés par `internal/node` (trois nœuds complets, WireGuard réel sur 127.0.0.1) :

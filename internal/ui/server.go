@@ -1,7 +1,10 @@
-// Package ui sert l'interface locale (côté LAN, jamais dans le tunnel).
+// Package ui sert l'interface locale (côté LAN, jamais dans le tunnel) : une
+// page unique embarquée et son API JSON sous /ui/api.
 //
-// J4 en livre la partie adhésion de l'API (/ui/api/status, circle, join,
-// invites, members) ; la page web et le reste de l'API arrivent en J5.
+// Protection CSRF : toute requête qui modifie quelque chose doit porter
+// l'en-tête X-Cercle-UI. Un autre site ne peut pas l'ajouter sans requête de
+// contrôle préalable (CORS), à laquelle l'interface ne répond pas : il ne peut
+// donc pas profiter du mot de passe mémorisé par le navigateur.
 package ui
 
 import (
@@ -10,14 +13,20 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/DB-CL/cercle/internal/buildinfo"
 	"github.com/DB-CL/cercle/internal/membership"
 	"github.com/DB-CL/cercle/internal/node"
+	"github.com/DB-CL/cercle/internal/transfer"
+	"github.com/DB-CL/cercle/web"
 )
 
 // Server est l'interface locale d'un nœud.
@@ -38,8 +47,50 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /ui/api/invites", s.invites)
 	mux.HandleFunc("POST /ui/api/invites", s.createInvite)
 	mux.HandleFunc("DELETE /ui/api/invites/{id}", s.cancelInvite)
+	mux.HandleFunc("GET /ui/api/members/{id}/files", s.browse)
+	mux.HandleFunc("GET /ui/api/queue", s.queue)
+	mux.HandleFunc("POST /ui/api/queue", s.enqueue)
+	mux.HandleFunc("POST /ui/api/queue/actions", s.queueActions)
+	mux.HandleFunc("PATCH /ui/api/queue/{id}", s.queueAction)
+	mux.HandleFunc("DELETE /ui/api/queue/{id}", s.queueRemove)
+	mux.HandleFunc("GET /ui/api/settings", s.settings)
+	mux.HandleFunc("PUT /ui/api/settings", s.putSettings)
+	mux.HandleFunc("GET /ui/api/share", s.share)
+	mux.HandleFunc("POST /ui/api/scan", s.scan)
+	mux.HandleFunc("GET /ui/api/events", s.eventsStream)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok\n")) })
-	return s.auth(mux)
+	static, _ := fs.Sub(web.FS, ".")
+	mux.Handle("GET /", http.FileServerFS(static))
+	return s.headers(s.auth(s.csrf(mux)))
+}
+
+// headers ajoute les en-têtes de sécurité : pas de script externe, pas d'iframe.
+func (s *Server) headers(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("Cache-Control", "no-store")
+		next.ServeHTTP(w, r)
+	})
+}
+
+// CSRFHeader doit accompagner toute requête qui modifie l'état.
+const CSRFHeader = "X-Cercle-UI"
+
+func (s *Server) csrf(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet, http.MethodHead:
+		default:
+			if r.Header.Get(CSRFHeader) == "" {
+				writeError(w, http.StatusForbidden, "en-tête "+CSRFHeader+" manquant")
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // auth applique l'authentification Basic si un mot de passe est défini.
@@ -180,6 +231,232 @@ func (s *Server) cancelInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) browse(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	page, err := s.Node.BrowsePeer(ctx, r.PathValue("id"), r.URL.Query().Get("path"), r.URL.Query().Get("cursor"))
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
+}
+
+type queueResp struct {
+	Summary transfer.Summary `json:"summary"`
+	Items   []transfer.Item  `json:"items"`
+}
+
+func (s *Server) queue(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	var statuses []transfer.Status
+	for _, st := range strings.Split(q.Get("status"), ",") {
+		if st = strings.TrimSpace(st); st != "" {
+			statuses = append(statuses, transfer.Status(st))
+		}
+	}
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	offset, _ := strconv.Atoi(q.Get("offset"))
+	sum, err := s.Node.Queue().Summarize(r.Context())
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	items, err := s.Node.Queue().ListPage(r.Context(), statuses, limit, offset)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, queueResp{Summary: sum, Items: items})
+}
+
+func (s *Server) enqueue(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Peer  string   `json:"peer"`
+		Paths []string `json:"paths"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil || req.Peer == "" || len(req.Paths) == 0 {
+		writeError(w, http.StatusBadRequest, "corps attendu : {\"peer\": \"<node_id>\", \"paths\": [\"…\"]}")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	defer cancel()
+	added, skipped, err := s.Node.Queue().Enqueue(ctx, req.Peer, req.Paths)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"added": added, "skipped": skipped})
+}
+
+// applyAction applique une action à un élément de la file.
+func (s *Server) applyAction(ctx context.Context, id int64, action string, deletePart bool) error {
+	q := s.Node.Queue()
+	switch action {
+	case "pause":
+		return q.Pause(ctx, id)
+	case "resume":
+		return q.Resume(ctx, id)
+	case "priority":
+		return q.Prioritize(ctx, id)
+	case "retry":
+		return q.Retry(ctx, id)
+	case "remove":
+		return q.Remove(ctx, id, deletePart)
+	}
+	return fmt.Errorf("action inconnue %q (pause, resume, priority, retry, remove)", action)
+}
+
+func (s *Server) queueAction(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	var req struct {
+		Action string `json:"action"`
+	}
+	if err != nil || json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req) != nil {
+		writeError(w, http.StatusBadRequest, "corps attendu : {\"action\": \"pause\"}")
+		return
+	}
+	if err := s.applyAction(r.Context(), id, req.Action, false); err != nil {
+		s.fail(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) queueRemove(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "identifiant invalide")
+		return
+	}
+	if err := s.Node.Queue().Remove(r.Context(), id, r.URL.Query().Get("part") == "1"); err != nil {
+		s.fail(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// queueActions applique une action à une sélection, ou vide les terminés.
+func (s *Server) queueActions(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		IDs        []int64 `json:"ids"`
+		Action     string  `json:"action"`
+		DeletePart bool    `json:"delete_part"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "corps illisible")
+		return
+	}
+	if req.Action == "clear_done" {
+		n, err := s.Node.Queue().ClearDone(r.Context())
+		if err != nil {
+			s.fail(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]int64{"removed": n})
+		return
+	}
+	for _, id := range req.IDs {
+		if err := s.applyAction(r.Context(), id, req.Action, req.DeletePart); err != nil {
+			s.fail(w, err)
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"done": len(req.IDs)})
+}
+
+func (s *Server) settings(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.Node.Settings())
+}
+
+func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
+	var req node.Settings
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "corps illisible")
+		return
+	}
+	if err := s.Node.SetSettings(r.Context(), req); err != nil {
+		var se node.SettingsError
+		if errors.As(err, &se) {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": "réglages invalides", "fields": se})
+			return
+		}
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.Node.Settings())
+}
+
+func (s *Server) share(w http.ResponseWriter, r *http.Request) {
+	size, files, last := s.Node.Index().Totals(r.Context())
+	_, limit, _, active := s.Node.Uploads().Limits()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"size": size, "files": files, "last_scan": last, "dir": s.Node.Config().ShareDir,
+		"uploads_active": active, "uploads_max": limit,
+	})
+}
+
+func (s *Server) scan(w http.ResponseWriter, _ *http.Request) {
+	s.Node.ScanNow()
+	w.WriteHeader(http.StatusAccepted)
+}
+
+// eventsStream envoie en Server-Sent Events les notifications de changement
+// (« queue », « members », « settings ») et, chaque seconde pendant un
+// transfert, la progression des éléments actifs.
+func (s *Server) eventsStream(w http.ResponseWriter, r *http.Request) {
+	fl, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "flux non pris en charge")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("X-Accel-Buffering", "no")
+	ch, cancel := s.Node.Events().Subscribe()
+	defer cancel()
+	send := func(event string, data any) bool {
+		b, _ := json.Marshal(data)
+		if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, b); err != nil {
+			return false
+		}
+		fl.Flush()
+		return true
+	}
+	if !send("hello", map[string]string{"version": buildinfo.Version}) {
+		return
+	}
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
+	ping := time.NewTicker(20 * time.Second)
+	defer ping.Stop()
+	pending := map[string]bool{}
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case kind := <-ch:
+			pending[kind] = true // regroupés, envoyés au prochain tic
+		case <-ping.C:
+			if _, err := fmt.Fprint(w, ": ping\n\n"); err != nil {
+				return
+			}
+			fl.Flush()
+		case <-tick.C:
+			for kind := range pending {
+				if !send(kind, map[string]string{}) {
+					return
+				}
+			}
+			clear(pending)
+			if active, err := s.Node.Queue().Active(r.Context()); err == nil && len(active) > 0 {
+				if !send("progress", active) {
+					return
+				}
+			}
+		}
+	}
 }
 
 // fail traduit une erreur en réponse, avec un message lisible par l'utilisateur.

@@ -351,16 +351,7 @@ func (m *Manager) List(ctx context.Context) ([]Item, error) {
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("lecture de la file : %w", err)
 	}
-	m.mu.Lock()
-	for i := range items {
-		if j, ok := m.jobs[items[i].ID]; ok {
-			items[i].BytesDone = j.done.Load()
-			if el := time.Since(time.Unix(0, j.start.Load())).Seconds(); el > 0.5 {
-				items[i].Rate = float64(j.done.Load()-j.startOffset.Load()) / el
-			}
-		}
-	}
-	m.mu.Unlock()
+	m.withProgress(items)
 	return items, nil
 }
 
@@ -619,4 +610,93 @@ func (m *Manager) runJob(ctx context.Context, it Item, j *job) {
 			log.Info("téléchargement interrompu, nouvel essai programmé", "after", wait, "err", err)
 		}
 	}
+}
+
+// Summary compte les éléments par statut, avec leur volume total.
+type Summary struct {
+	Count map[Status]int   `json:"count"`
+	Bytes map[Status]int64 `json:"bytes"`
+}
+
+// Summarize renvoie les compteurs de la file.
+func (m *Manager) Summarize(ctx context.Context) (Summary, error) {
+	s := Summary{Count: map[Status]int{}, Bytes: map[Status]int64{}}
+	rows, err := m.opt.Store.R.QueryContext(ctx, "SELECT status, COUNT(*), COALESCE(SUM(size), 0) FROM queue GROUP BY status")
+	if err != nil {
+		return s, fmt.Errorf("lecture de la file : %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var st string
+		var n int
+		var b int64
+		if err := rows.Scan(&st, &n, &b); err != nil {
+			return s, fmt.Errorf("lecture de la file : %w", err)
+		}
+		s.Count[Status(st)], s.Bytes[Status(st)] = n, b
+	}
+	return s, rows.Err()
+}
+
+// ListPage renvoie une page de la file, limitée à certains statuts (tous si
+// vide), dans l'ordre de traitement ; les terminés, du plus récent au plus ancien.
+func (m *Manager) ListPage(ctx context.Context, statuses []Status, limit, offset int) ([]Item, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 200
+	}
+	q := "SELECT " + itemCols + " FROM queue"
+	var args []any
+	if len(statuses) > 0 {
+		q += " WHERE status IN (?" + strings.Repeat(", ?", len(statuses)-1) + ")"
+		for _, s := range statuses {
+			args = append(args, string(s))
+		}
+	}
+	q += ` ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'queued' THEN 1 WHEN 'waiting' THEN 2
+		WHEN 'paused' THEN 3 WHEN 'error' THEN 4 ELSE 5 END,
+		CASE WHEN status = 'done' THEN -updated_at ELSE 0 END, priority DESC, created_at, id LIMIT ? OFFSET ?`
+	args = append(args, limit, offset)
+	rows, err := m.opt.Store.R.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("lecture de la file : %w", err)
+	}
+	defer rows.Close()
+	items := []Item{}
+	for rows.Next() {
+		it, err := scanItem(rows)
+		if err != nil {
+			return nil, fmt.Errorf("lecture de la file : %w", err)
+		}
+		items = append(items, it)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	m.withProgress(items)
+	return items, nil
+}
+
+// Active renvoie les transferts en cours avec leur progression.
+func (m *Manager) Active(ctx context.Context) ([]Item, error) {
+	return m.ListPage(ctx, []Status{Active}, 100, 0)
+}
+
+func (m *Manager) withProgress(items []Item) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range items {
+		if j, ok := m.jobs[items[i].ID]; ok {
+			items[i].BytesDone = j.done.Load()
+			if el := time.Since(time.Unix(0, j.start.Load())).Seconds(); el > 0.5 {
+				items[i].Rate = float64(j.done.Load()-j.startOffset.Load()) / el
+			}
+		}
+	}
+}
+
+// ClearDone retire de la file les éléments terminés (les fichiers restent).
+func (m *Manager) ClearDone(ctx context.Context) (int64, error) {
+	n, err := m.exec(ctx, "DELETE FROM queue WHERE status = 'done'")
+	m.changed()
+	return n, err
 }

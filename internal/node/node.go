@@ -43,6 +43,7 @@ type Options struct {
 
 // Node est un nœud Cercle.
 type Node struct {
+	cfgMu  sync.Mutex
 	cfg    config.Config
 	opt    Options
 	log    *slog.Logger
@@ -54,7 +55,11 @@ type Node struct {
 	queue  *transfer.Manager
 	client *peerapi.Client
 
-	kick chan struct{}
+	kick   chan struct{}
+	events Hub
+
+	infoMu sync.Mutex
+	infos  map[string]peerInfo
 
 	devMu   sync.Mutex // démarrage et arrêt du tunnel
 	dev     *wg.Device
@@ -89,7 +94,7 @@ func New(ctx context.Context, opt Options) (*Node, error) {
 		opt.Logger = slog.Default()
 	}
 	cfg := opt.Config
-	n := &Node{opt: opt, log: opt.Logger, kick: make(chan struct{}, 1), rr: map[string]int{}, dns: map[string]dnsEntry{}}
+	n := &Node{opt: opt, log: opt.Logger, kick: make(chan struct{}, 1), rr: map[string]int{}, dns: map[string]dnsEntry{}, infos: map[string]peerInfo{}}
 
 	var err error
 	if n.wgKey, err = wg.LoadOrCreateKey(filepath.Join(cfg.DataDir, "node.key")); err != nil {
@@ -121,6 +126,7 @@ func New(ctx context.Context, opt Options) (*Node, error) {
 	n.queue = transfer.NewManager(transfer.Options{
 		Store: n.st, Remote: n.remote(), Peers: n.peerByID, Dir: cfg.DownloadsDir,
 		Concurrency: cfg.DownloadConcurrency, Limit: cfg.DownloadLimit, Window: cfg.DownloadWindow, Logger: n.log,
+		OnChange: func() { n.events.Publish("queue") },
 	})
 	return n, nil
 }
@@ -149,7 +155,6 @@ func (n *Node) Index() *index.Index             { return n.ix }
 func (n *Node) Uploads() *transfer.Uploads      { return n.up }
 func (n *Node) Queue() *transfer.Manager        { return n.queue }
 func (n *Node) Membership() *membership.Service { return n.ms }
-func (n *Node) Config() config.Config           { return n.cfg }
 func (n *Node) PublicKey() wg.Key               { return n.wgKey.Public() }
 
 // Close ferme la base (après Run).
@@ -200,6 +205,8 @@ func (n *Node) Run(ctx context.Context) error {
 	for {
 		n.reconcile(ctx)
 		n.gossipRound(ctx)
+		n.refreshInfo(ctx)
+		n.events.Publish("members")
 		last = time.Now()
 		select {
 		case <-ctx.Done():
@@ -279,7 +286,7 @@ func (n *Node) device() *wg.Device {
 
 func (n *Node) info(ctx context.Context) peerapi.Info {
 	size, files, last := n.ix.Totals(ctx)
-	name := n.cfg.NodeName
+	name := n.Config().NodeName
 	if self, ok := n.ms.Self(); ok {
 		name = self.Name
 	}
@@ -323,7 +330,7 @@ func (n *Node) acceptJoin(ctx context.Context, tempIP netip.Addr, req membership
 
 // CreateCircle fonde un cercle.
 func (n *Node) CreateCircle(ctx context.Context) error {
-	if err := n.ms.Create(ctx, n.cfg.TunnelSubnet, n.cfg.NodeName, n.cfg.WGPublicEndpoints); err != nil {
+	if err := n.ms.Create(ctx, n.cfg.TunnelSubnet, n.Config().NodeName, n.cfg.WGPublicEndpoints); err != nil {
 		return err
 	}
 	self, _ := n.ms.Self()
@@ -376,7 +383,7 @@ func (n *Node) Join(ctx context.Context, raw string) error {
 	if err != nil {
 		return err
 	}
-	req, err := n.ms.PrepareJoin(code, n.cfg.NodeName, n.cfg.WGPublicEndpoints)
+	req, err := n.ms.PrepareJoin(code, n.Config().NodeName, n.cfg.WGPublicEndpoints)
 	if err != nil {
 		return err
 	}
@@ -664,6 +671,10 @@ type PeerState struct {
 	Endpoint      string    `json:"endpoint,omitempty"`
 	RxBytes       uint64    `json:"rx_bytes"`
 	TxBytes       uint64    `json:"tx_bytes"`
+	ShareSize     int64     `json:"share_size"`
+	ShareFiles    int64     `json:"share_files"`
+	Version       string    `json:"version,omitempty"`
+	InfoAt        time.Time `json:"info_at,omitzero"`
 }
 
 // Peers renvoie les membres avec leur état WireGuard.
@@ -679,6 +690,15 @@ func (n *Node) Peers() []PeerState {
 	var out []PeerState
 	for _, m := range n.ms.Members() {
 		ps := PeerState{Member: m}
+		n.infoMu.Lock()
+		if pi, ok := n.infos[m.NodeID]; ok {
+			ps.ShareSize, ps.ShareFiles, ps.Version, ps.InfoAt = pi.info.ShareSize, pi.info.ShareFiles, pi.info.Version, pi.at
+		}
+		n.infoMu.Unlock()
+		if m.Self {
+			ps.ShareSize, ps.ShareFiles, _ = n.ix.Totals(context.Background())
+			ps.Online = true
+		}
 		if st, ok := status[m.NodeID]; ok {
 			ps.Online, ps.LastHandshake, ps.RxBytes, ps.TxBytes = st.Online(time.Now()), st.LastHandshake, st.RxBytes, st.TxBytes
 			if st.Endpoint.IsValid() {
