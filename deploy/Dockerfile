@@ -3,8 +3,8 @@
 # La compilation est croisée (GOARCH) sur la plateforme de build : aucune
 # émulation n'est nécessaire, quelle que soit l'architecture visée.
 #
-#   docker build --network host -f deploy/Dockerfile -t cercle .
-#   docker buildx build --network host --platform linux/amd64,linux/arm64,linux/arm/v7 -f deploy/Dockerfile .
+#   docker build -f deploy/Dockerfile -t cercle .
+#   docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 -f deploy/Dockerfile .
 
 FROM --platform=$BUILDPLATFORM golang:1.27.3-bookworm AS build
 ARG TARGETOS TARGETARCH TARGETVARIANT
@@ -26,6 +26,7 @@ FROM scratch
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build --chown=65532:65532 /out/root/ /
 COPY --from=build /out/cercle /cercle
+COPY THIRD_PARTY_LICENSES.md LICENSE* /usr/share/doc/cercle/
 USER 65532:65532
 EXPOSE 51820/udp 8080/tcp
 VOLUME ["/data", "/downloads"]
