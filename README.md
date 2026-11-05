@@ -124,8 +124,6 @@ L'image `ghcr.io/db-cl/cercle:1` suit les versions 1.x. La file de téléchargem
 
 ## Sécurité, en bref
 
-Détails, garanties et limites : [SECURITY.md](SECURITY.md).
-
 - Rien n'est exposé sur Internet à part le port UDP de WireGuard. L'API entre nœuds n'écoute que dans le tunnel.
 - Chaque nœud signe sa propre fiche (Ed25519) : personne ne peut se faire passer pour un autre membre, ni entrer sans invitation.
 - Un membre ne voit que le dossier `/share` des autres, en lecture seule. Les chemins sont confinés à l'envoi comme à la réception.
