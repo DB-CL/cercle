@@ -122,6 +122,7 @@ func New(ctx context.Context, opt Options) (*Node, error) {
 		return nil, fmt.Errorf("dossier des téléchargements : %w", err)
 	}
 	n.ix = index.New(n.st, cfg.ShareDir, cfg.ShareExclude, n.log)
+	n.ix.OnScan = func() { n.events.Publish("share") }
 	n.up = transfer.NewUploads(cfg.UploadLimit, cfg.MaxUploads, cfg.UploadWindow)
 	n.client = peerapi.NewClient(n.dial, "")
 	n.queue = transfer.NewManager(transfer.Options{

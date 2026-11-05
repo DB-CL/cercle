@@ -23,7 +23,7 @@ Le fichier [`deploy/compose.yml`](deploy/compose.yml) sert de modèle. Les régl
 | `NODE_NAME` | Le nom que verront les autres membres. |
 | `WG_PUBLIC_ENDPOINTS` | Adresse et port où les autres vous joignent : `alice.duckdns.org:51820`, `203.0.113.4:51820` ou `[2001:db8::1]:51820`. Plusieurs adresses séparées par des virgules. |
 | `UI_PASSWORD` | Le mot de passe de l'interface web. |
-| Volumes | `/share` (le dossier partagé, en lecture seule), `/downloads` (ce que vous recevez), `/data` (clés et base, à sauvegarder). |
+| Volumes | `/share` : ce que vous partagez, en lecture seule. Montez-y un ou plusieurs dossiers (`/mnt/nas/films:/share/films:ro`, `/mnt/nas/musique:/share/musique:ro`), puis choisissez dans Réglages lesquels partager. `/downloads` : ce que vous recevez. `/data` : clés et base, à sauvegarder. |
 
 ### Synology (Container Manager)
 
@@ -68,7 +68,7 @@ Certaines offres, souvent en 4G ou 5G, partagent une même adresse IPv4 entre pl
 2. Dans **Membres**, il clique sur **Inviter un ami**. Le code `cercle1:…` affiché sert une seule fois et expire au bout de 72 h : copiez-le et envoyez-le à votre ami par messagerie.
 3. **L'ami** installe Cercle, ouvre son interface, colle le code dans **Rejoindre avec un code**, et c'est tout. N'importe quel membre peut ensuite inviter à son tour.
 4. **Parcourir** un membre affiche ses dossiers. Cochez des fichiers ou des dossiers entiers, puis **Télécharger la sélection**. Les fichiers arrivent dans `/downloads/<nom du membre>/`, avec reprise automatique en cas de coupure.
-5. Dans **Réglages**, chacun choisit ce qu'il accepte d'envoyer aux autres : débit maximal, nombre d'envois simultanés, et éventuellement un créneau horaire (par exemple `01:00-07:00`).
+5. Dans **Réglages**, chacun choisit **quels dossiers partager** parmi ceux montés sous `/share` (par défaut : tous, y compris ceux montés plus tard), et ce qu'il accepte d'envoyer : débit maximal, nombre d'envois simultanés, et éventuellement un créneau horaire (par exemple `01:00-07:00`).
 
 Un membre peut être **révoqué** par n'importe quel autre, depuis la page Membres. C'est définitif : il perd l'accès chez tout le monde en quelques secondes.
 
@@ -234,7 +234,7 @@ Ce qui marche :
 - **Membres** : en ligne ou non, adresse, taille partagée, dernière poignée de main, endpoint. Inviter (code à copier, invitations en attente annulables), révoquer, parcourir.
 - **Partage d'un membre** : fil d'Ariane, dossiers d'abord, cases à cocher conservées pendant la navigation, barre « Télécharger la sélection » avec le volume total.
 - **Téléchargements** : filtres par état avec compteurs ; progression, débit et temps restant en direct ; erreurs et prochain essai ; actions par élément ou sur une sélection ; vidage des terminés.
-- **Réglages** : nom, débits, nombre de transferts et créneaux, appliqués à chaud, avec les erreurs affichées champ par champ. État du partage avec relance du scan. État réseau (adresse, port, endpoints annoncés, clé publique, cercle).
+- **Réglages** : nom, débits, nombre de transferts et créneaux, appliqués à chaud, avec les erreurs affichées champ par champ. Choix des dossiers partagés au premier niveau de `/share` (ou « tout partager », y compris les dossiers montés plus tard) : ce qui est décoché n'est plus indexé ni servi après la réindexation, lancée aussitôt. Relance du scan. État réseau (adresse, port, endpoints annoncés, clé publique, cercle).
 - API complète sous `/ui/api` : celle du PRD, plus `GET /share` et `POST /queue/actions` pour les actions groupées. Flux d'événements `GET /ui/api/events` : changements regroupés, et progression chaque seconde pendant un transfert.
 - Sécurité : page de connexion par mot de passe (`UI_PASSWORD`) et session signée, avec un bandeau d'avertissement si aucun mot de passe n'est défini. L'authentification Basic reste acceptée pour les scripts, sans jamais déclencher la fenêtre du navigateur. En-tête `X-Cercle-UI` obligatoire pour toute modification (CSRF). CSP `default-src 'self'`. Aucun texte venu d'un pair n'est inséré comme HTML.
 
@@ -242,7 +242,7 @@ Vérifications : tests Go de l'API (parcours complet entre deux nœuds, mot de p
 
 Écarts au PRD :
 
-- `POST /ui/api/queue/actions` et `GET /ui/api/share` ajoutés.
+- `POST /ui/api/queue/actions`, `GET /ui/api/share` et `PUT /ui/api/share` (sélection des dossiers partagés) ajoutés.
 - La file s'affiche par pages de 200, filtrées par état : une file de 10 000 éléments reste fluide.
 
 Ce qui manque :

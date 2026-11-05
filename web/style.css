@@ -246,6 +246,19 @@ dl.kv dt::after { content: " :"; color: var(--faint); }
 dl.kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0 14px; }
 
+/* Réglages : dossiers partagés */
+.share-all { display: flex; gap: 10px; align-items: center; color: var(--text); margin: 10px 0 6px; cursor: pointer; }
+.share-list { border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); margin-bottom: 6px; }
+.share-row {
+  display: grid; grid-template-columns: 2ch 2ch minmax(0, 1fr) 10ch 14ch; gap: 10px; align-items: center;
+  padding: 2px 6px; margin: 0; color: var(--dim); border-top: 1px solid var(--bg-3); cursor: pointer;
+}
+.share-row:first-child { border-top: none; }
+.share-row:hover { background: var(--bg-2); }
+.share-row.on { color: var(--text); }
+.share-row .nm { overflow-wrap: anywhere; }
+.share-row input:disabled { opacity: .55; cursor: default; }
+
 /* Membres : invitation */
 .invite-code { margin: 8px 0; color: var(--accent); }
 .pending-row { display: grid; grid-template-columns: 1fr auto; gap: 14px; padding: 3px 0; border-top: 1px solid var(--bg-3); }

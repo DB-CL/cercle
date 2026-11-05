@@ -246,3 +246,70 @@ func TestScanScale(t *testing.T) {
 		t.Errorf("liste d'un dossier en %v > 200 ms", listDur)
 	}
 }
+
+func TestSelection(t *testing.T) {
+	ctx := context.Background()
+	share := t.TempDir()
+	write(t, share, "films/a.mkv", 10)
+	write(t, share, "musique/b.flac", 20)
+	write(t, share, "photos/c.jpg", 30)
+	write(t, share, "lisez-moi.txt", 1)
+	write(t, share, ".cache/x", 5)
+	ix := newIndex(t, share)
+
+	sel, err := ix.Selection(ctx)
+	if err != nil || !sel.All {
+		t.Fatalf("par défaut : %+v, %v ; tout partagé attendu", sel, err)
+	}
+	if _, err := ix.Scan(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, n, _ := ix.Totals(ctx); n != 4 {
+		t.Fatalf("tout partagé : %d fichiers, attendu 4", n)
+	}
+
+	must(t, ix.SetSelection(ctx, Selection{Folders: []string{"photos", "films", "films"}}))
+	if _, err := ix.Scan(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if size, n, _ := ix.Totals(ctx); n != 2 || size != 40 {
+		t.Fatalf("films + photos : %d fichiers, %d octets", n, size)
+	}
+	if f, _, err := ix.Open(ctx, "musique/b.flac"); err == nil {
+		f.Close()
+		t.Fatal("un dossier décoché est encore servi")
+	}
+	if f, _, err := ix.Open(ctx, "lisez-moi.txt"); err == nil {
+		f.Close()
+		t.Fatal("un fichier du premier niveau non coché est servi")
+	}
+	top, err := ix.TopLevel(ctx)
+	must(t, err)
+	got := ""
+	for _, e := range top {
+		got += fmt.Sprintf("%s:%v:%d ", e.Name, e.Shared, e.Files)
+	}
+	if got != "films:true:1 musique:false:0 photos:true:1 lisez-moi.txt:false:0 " {
+		t.Errorf("premier niveau = %q", got)
+	}
+	// Nouveau dossier monté : non partagé tant qu'il n'est pas coché.
+	write(t, share, "series/d.mkv", 7)
+	if _, err := ix.Scan(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ix.Lookup(ctx, "series/d.mkv"); !errors.Is(err, ErrNotFound) {
+		t.Error("nouveau dossier partagé sans avoir été coché")
+	}
+	for _, bad := range []string{"../etc", "a/b", "..", ""} {
+		if err := ix.SetSelection(ctx, Selection{Folders: []string{bad}}); err == nil {
+			t.Errorf("nom %q accepté", bad)
+		}
+	}
+	must(t, ix.SetSelection(ctx, Selection{All: true}))
+	if _, err := ix.Scan(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, n, _ := ix.Totals(ctx); n != 5 {
+		t.Errorf("retour à « tout » : %d fichiers, attendu 5", n)
+	}
+}

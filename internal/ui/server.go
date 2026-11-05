@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/DB-CL/cercle/internal/buildinfo"
+	"github.com/DB-CL/cercle/internal/index"
 	"github.com/DB-CL/cercle/internal/membership"
 	"github.com/DB-CL/cercle/internal/node"
 	"github.com/DB-CL/cercle/internal/transfer"
@@ -58,6 +59,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /ui/api/settings", s.settings)
 	mux.HandleFunc("PUT /ui/api/settings", s.putSettings)
 	mux.HandleFunc("GET /ui/api/share", s.share)
+	mux.HandleFunc("PUT /ui/api/share", s.putShare)
 	mux.HandleFunc("POST /ui/api/scan", s.scan)
 	mux.HandleFunc("GET /ui/api/events", s.eventsStream)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok\n")) })
@@ -369,12 +371,38 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) share(w http.ResponseWriter, r *http.Request) {
-	size, files, last := s.Node.Index().Totals(r.Context())
+	ix := s.Node.Index()
+	size, files, last := ix.Totals(r.Context())
 	_, limit, _, active := s.Node.Uploads().Limits()
+	sel, err := ix.Selection(r.Context())
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	top, err := ix.TopLevel(r.Context())
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"size": size, "files": files, "last_scan": last, "dir": s.Node.Config().ShareDir,
 		"uploads_active": active, "uploads_max": limit,
+		"all": sel.All, "folders": top,
 	})
+}
+
+// putShare choisit ce qui est partagé au premier niveau de /share, puis relance l'indexation.
+func (s *Server) putShare(w http.ResponseWriter, r *http.Request) {
+	var sel index.Selection
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&sel); err != nil {
+		writeError(w, http.StatusBadRequest, "corps attendu : {\"all\": false, \"folders\": [\"films\"]}")
+		return
+	}
+	if err := s.Node.Index().SetSelection(r.Context(), sel); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.share(w, r)
 }
 
 func (s *Server) scan(w http.ResponseWriter, _ *http.Request) {

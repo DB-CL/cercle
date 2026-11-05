@@ -235,6 +235,20 @@ func TestBrowseThroughTunnel(t *testing.T) {
 	defer func() { cancel(); <-done }()
 
 	c := NewClient(bob.dev.DialContext, "c")
+	// Premier contact : la poignée de main WireGuard peut se perdre et n'être
+	// réessayée qu'au bout de 5 s (voire deux fois). On attend le lien, au plus 30 s.
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		ictx, icancel := context.WithTimeout(context.Background(), 6*time.Second)
+		_, err := c.Info(ictx, alice.ip)
+		icancel()
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("tunnel jamais établi : %v", err)
+		}
+	}
 	rctx, rcancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer rcancel()
 	page, err := c.Files(rctx, alice.ip, "films", "")

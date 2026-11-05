@@ -685,13 +685,6 @@ async function renderSettings() {
       }
     }),
   }, "Enregistrer");
-  const scanBtn = h("button", {
-    onclick: () => guard(scanBtn, async () => {
-      await api("POST", "/scan");
-      toast("Scan du partage lancé.");
-    }),
-  }, "Relancer le scan");
-
   const rateHint = "Octets par seconde, suffixes K, M ou G (20M = 20 Mo/s). 0 = illimité.";
   const winHint = "Créneau quotidien, par exemple 01:00-07:00. Vide = à toute heure.";
   setView(
@@ -713,14 +706,7 @@ async function renderSettings() {
         field("download_window", "Créneau de téléchargement", winHint))),
     h("p", {}, saveBtn),
     h("div", { class: "grid2" },
-      h("div", { class: "card" },
-        h("h3", {}, "Partage"),
-        h("dl", { class: "kv" },
-          h("dt", {}, "Dossier"), h("dd", { class: "mono" }, share.dir),
-          h("dt", {}, "Contenu"), h("dd", {}, plural(share.files, "fichier", "fichiers") + ", " + fmtSize(share.size)),
-          h("dt", {}, "Dernier scan"), h("dd", {}, share.last_scan ? fmtAgo(share.last_scan) : "aucun"),
-          h("dt", {}, "Envois en cours"), h("dd", {}, share.uploads_active + " sur " + share.uploads_max)),
-        h("p", {}, scanBtn)),
+      sharePanel(share),
       h("div", { class: "card" },
         h("h3", {}, "Réseau"),
         h("dl", { class: "kv" },
@@ -732,6 +718,59 @@ async function renderSettings() {
           h("dt", {}, "Version"), h("dd", {}, st.version)),
         !st.announced_endpoints?.length && h("p", { class: "hint" }, "Sans endpoint annoncé (WG_PUBLIC_ENDPOINTS), les autres ne vous joignent que si vous les contactez d'abord, et vous ne pouvez inviter que si un membre vous voit déjà."),
         h("p", {}, copyButton(() => st.public_key)))));
+}
+
+// ---------- Partage : choix des dossiers du premier niveau de /share ----------
+
+// sharePanel affiche ce que contient /share et ce qui en est partagé. La
+// sélection ne porte que sur le premier niveau (les volumes montés) ; tout ce
+// qui est dessous suit son dossier.
+function sharePanel(share) {
+  const card = h("div", { class: "card share-panel" });
+  const draw = (share) => {
+    const all = h("input", { type: "checkbox", checked: share.all });
+    const boxes = new Map();
+    const rows = share.folders.map((f) => {
+      const cb = h("input", { type: "checkbox", checked: f.shared, disabled: share.all, "aria-label": "Partager " + f.name });
+      boxes.set(f.name, cb);
+      return h("label", { class: "share-row" + (f.shared ? " on" : "") },
+        cb,
+        h("span", { class: "ic " + (f.is_dir ? "dir" : "file"), "aria-hidden": "true" }),
+        h("span", { class: "nm" }, f.name),
+        h("span", { class: "num" }, f.shared ? fmtSize(f.size) : ""),
+        h("span", { class: "num muted" }, f.shared ? nf0.format(f.files) + " fich." : "non partagé"));
+    });
+    all.addEventListener("change", () => { for (const cb of boxes.values()) { cb.disabled = all.checked; if (all.checked) cb.checked = true; } });
+    const apply = h("button", {
+      class: "primary",
+      onclick: () => guard(apply, async () => {
+        const folders = [...boxes].filter(([, cb]) => cb.checked).map(([n]) => n);
+        const res = await api("PUT", "/share", { all: all.checked, folders });
+        draw(res);
+        toast("Partage mis à jour, réindexation en cours.");
+      }),
+    }, "appliquer");
+    const rescan = h("button", {
+      onclick: () => guard(rescan, async () => {
+        await api("POST", "/scan");
+        toast("Scan du partage lancé.");
+      }),
+    }, "relancer le scan");
+    card.replaceChildren(
+      h("h3", {}, "Partage"),
+      h("dl", { class: "kv" },
+        h("dt", {}, "Dossier"), h("dd", { class: "mono" }, share.dir),
+        h("dt", {}, "Partagé"), h("dd", {}, plural(share.files, "fichier", "fichiers") + ", " + fmtSize(share.size)),
+        h("dt", {}, "Dernier scan"), h("dd", {}, share.last_scan ? fmtAgo(share.last_scan) : "aucun"),
+        h("dt", {}, "Envois en cours"), h("dd", {}, share.uploads_active + " sur " + share.uploads_max)),
+      h("label", { class: "share-all" }, all, "tout partager, y compris les dossiers montés plus tard"),
+      h("div", { class: "share-list" }, rows.length ? rows : h("div", { class: "empty" }, "/share est vide : montez-y vos dossiers dans le compose.")),
+      h("p", { class: "hint" }, "Seul le premier niveau de /share se choisit ici. Pour ajouter un dossier, montez-le dans le compose, par exemple /mnt/nas/films:/share/films:ro."),
+      h("div", { class: "actions" }, apply, rescan));
+  };
+  draw(share);
+  state.refreshShare = async () => { if (card.isConnected) draw(await api("GET", "/share")); };
+  return card;
 }
 
 // ---------- Événements en direct ----------
@@ -761,6 +800,7 @@ function connectEvents() {
     else refreshMembersQuietly();
   }, 500));
   es.addEventListener("settings", () => loadStatus().catch(() => {}));
+  es.addEventListener("share", () => { if (state.view === "reglages") state.refreshShare?.().catch(() => {}); });
 }
 
 // ---------- Démarrage ----------

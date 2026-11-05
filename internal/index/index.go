@@ -46,6 +46,9 @@ type Index struct {
 	log      *slog.Logger
 	scanMu   sync.Mutex // un seul scan à la fois
 	trigger  chan struct{}
+
+	// OnScan est appelé à la fin de chaque scan réussi (notification de l'interface).
+	OnScan func()
 }
 
 // New prépare l'index du dossier dir. excludes sont des motifs glob (path.Match)
@@ -70,6 +73,9 @@ func (ix *Index) Run(ctx context.Context, interval time.Duration) {
 		case err != nil:
 			ix.log.Error("scan du partage en échec", "err", err)
 		default:
+			if ix.OnScan != nil {
+				ix.OnScan()
+			}
 			ix.log.Info("scan du partage terminé", "files", st.Files, "dirs", st.Dirs, "size", st.Size, "skipped", st.Skipped, "duration", st.Duration.Round(time.Millisecond).String())
 		}
 		select {
@@ -136,6 +142,11 @@ func (ix *Index) Scan(ctx context.Context) (Stats, error) {
 		return st, fmt.Errorf("lecture du partage %s : %w", ix.dir, err)
 	}
 
+	sel, err := ix.Selection(ctx)
+	if err != nil {
+		return st, err
+	}
+
 	var gen int64
 	if err := ix.st.W.QueryRowContext(ctx, "SELECT COALESCE(MAX(scan_gen), 0) + 1 FROM files").Scan(&gen); err != nil {
 		return st, fmt.Errorf("génération de scan : %w", err)
@@ -181,6 +192,13 @@ func (ix *Index) Scan(ctx context.Context) (Stats, error) {
 			return nil
 		}
 		parent := parentOf(p)
+		if parent == "" && !sel.Shares(d.Name()) {
+			// Premier niveau non coché dans les réglages : ni indexé ni servi.
+			if d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
 		for stack[len(stack)-1].path != parent {
 			if err := closeDir(); err != nil {
 				return err

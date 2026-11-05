@@ -342,6 +342,41 @@ func TestFullFlow(t *testing.T) {
 	})
 }
 
+func TestShareSelection(t *testing.T) {
+	a := start(t, "alice", "secret", map[string]string{"films/a.mkv": "AAAA", "musique/b.flac": "BB", "photos/c.jpg": "C"})
+	if _, err := a.n.Index().Scan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	type shareResp struct {
+		All     bool `json:"all"`
+		Files   int  `json:"files"`
+		Folders []struct {
+			Name   string `json:"name"`
+			Shared bool   `json:"shared"`
+		} `json:"folders"`
+	}
+	var sr shareResp
+	if code := a.call("GET", "/share", nil, &sr); code != 200 || !sr.All || len(sr.Folders) != 3 || sr.Files != 3 {
+		t.Fatalf("partage par défaut : %d %+v", code, sr)
+	}
+	var e map[string]string
+	if code := a.call("PUT", "/share", map[string]any{"folders": []string{"../etc"}}, &e); code != 400 {
+		t.Errorf("nom piégé : %d %v", code, e)
+	}
+	if code := a.call("PUT", "/share", map[string]any{"all": false, "folders": []string{"films"}}, &sr); code != 200 || sr.All {
+		t.Fatalf("sélection : %d %+v", code, sr)
+	}
+	eventually(t, "réindexation", func() bool {
+		a.call("GET", "/share", nil, &sr)
+		return sr.Files == 1
+	})
+	for _, f := range sr.Folders {
+		if f.Shared != (f.Name == "films") {
+			t.Errorf("%s : partagé=%v", f.Name, f.Shared)
+		}
+	}
+}
+
 func TestEventsStream(t *testing.T) {
 	a := start(t, "alice", "", nil)
 	req, _ := http.NewRequest(http.MethodGet, a.srv.URL+"/ui/api/events", nil)
