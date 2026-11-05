@@ -28,6 +28,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Préfixes de signature : une signature d'admission ne peut pas passer pour
@@ -167,8 +169,64 @@ func check(f Fiche, circle string, signer func(nodeID string) (ed25519.PublicKey
 	if !b.TunnelIP.Is4() {
 		return d, errors.New("adresse de tunnel invalide")
 	}
+	if err := validBody(b); err != nil {
+		return d, err
+	}
 	d.fiche = f
 	return d, nil
+}
+
+// Plafonds des champs d'une fiche : un membre ne doit pas pouvoir publier une
+// fiche démesurée que tous les autres stockeraient et afficheraient.
+const (
+	maxNameLen      = 64
+	maxAnnounced    = 8
+	maxEndpointLen  = 255
+	maxObserved     = 256
+	maxObservedAddr = 64
+)
+
+// CleanName rend un nom acceptable dans une fiche : sans caractère de
+// contrôle, 64 caractères au plus, « membre » s'il ne reste rien.
+func CleanName(n string) string {
+	var out []rune
+	for _, r := range strings.TrimSpace(n) {
+		if !unicode.IsControl(r) && len(out) < maxNameLen {
+			out = append(out, r)
+		}
+	}
+	if len(out) == 0 {
+		return "membre"
+	}
+	return string(out)
+}
+
+func validBody(b Body) error {
+	if n := utf8.RuneCountInString(b.Name); n == 0 || n > maxNameLen {
+		return errors.New("nom vide ou trop long")
+	}
+	for _, r := range b.Name {
+		if unicode.IsControl(r) {
+			return errors.New("caractère de contrôle dans le nom")
+		}
+	}
+	if len(b.Announced) > maxAnnounced {
+		return errors.New("trop d'endpoints annoncés")
+	}
+	for _, e := range b.Announced {
+		if len(e) > maxEndpointLen {
+			return errors.New("endpoint annoncé trop long")
+		}
+	}
+	if len(b.Observed) > maxObserved {
+		return errors.New("trop d'endpoints observés")
+	}
+	for k, v := range b.Observed {
+		if len(k) > 64 || len(v) > maxObservedAddr {
+			return errors.New("endpoint observé invalide")
+		}
+	}
+	return nil
 }
 
 // LoadOrCreateSignKey lit la clé Ed25519 du nœud, ou la crée (0600).

@@ -9,8 +9,10 @@ import (
 	"errors"
 	"net/netip"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/DB-CL/cercle/internal/store"
 )
@@ -331,5 +333,42 @@ func TestDuplicateNames(t *testing.T) {
 			t.Fatalf("nom affiché en double : %q", m.DisplayName)
 		}
 		seen[m.DisplayName] = true
+	}
+}
+
+func TestOversizedOrOutOfSubnetFicheRejected(t *testing.T) {
+	ctx := context.Background()
+	alice, mallory := newNode(t, "alice"), newNode(t, "mallory")
+	must(t, alice.s.Create(ctx, subnet, "alice", nil))
+	join(t, alice, mallory)
+	gossip(t, alice, mallory)
+
+	forge := func(mut func(*Body)) Table {
+		tab := mallory.s.Table()
+		for i, f := range tab.Fiches {
+			var b Body
+			_ = json.Unmarshal(f.Body, &b)
+			if b.NodeID == mallory.id.NodeID {
+				mut(&b)
+				b.Version += 10
+				tab.Fiches[i].Body, tab.Fiches[i].BodySig, _ = NewBody(mallory.id.Sign, b)
+			}
+		}
+		return tab
+	}
+	for name, mut := range map[string]func(*Body){
+		"nom démesuré":       func(b *Body) { b.Name = strings.Repeat("x", 5000) },
+		"hors sous-réseau":   func(b *Body) { b.TunnelIP = netip.MustParseAddr("192.168.1.1") },
+		"endpoints en masse": func(b *Body) { b.Announced = make([]string, 100) },
+	} {
+		_, err := alice.s.Merge(ctx, forge(mut))
+		must(t, err)
+		m, _ := alice.s.Member(mallory.id.NodeID)
+		if m.Name != "mallory" || m.TunnelIP.String() == "192.168.1.1" || len(m.Announced) > 8 {
+			t.Errorf("%s : fiche acceptée (%q, %v, %d endpoints)", name, m.Name, m.TunnelIP, len(m.Announced))
+		}
+	}
+	if got := CleanName("  bob\x00\n" + strings.Repeat("é", 100)); utf8.RuneCountInString(got) != 64 || strings.ContainsAny(got, "\x00\n") {
+		t.Errorf("CleanName = %q", got)
 	}
 }

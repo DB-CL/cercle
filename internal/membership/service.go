@@ -150,7 +150,7 @@ func (s *Service) Create(ctx context.Context, subnet netip.Prefix, name string, 
 	if err != nil {
 		return err
 	}
-	body, bodySig, err := NewBody(s.id.Sign, Body{Circle: circle, NodeID: s.id.NodeID, Name: name,
+	body, bodySig, err := NewBody(s.id.Sign, Body{Circle: circle, NodeID: s.id.NodeID, Name: CleanName(name),
 		TunnelIP: ip, Announced: announced, Version: 1, UpdatedAt: now})
 	if err != nil {
 		return err
@@ -161,7 +161,7 @@ func (s *Service) Create(ctx context.Context, subnet netip.Prefix, name string, 
 
 // enterLocked enregistre le cercle et la fiche du nœud, puis fusionne t.
 func (s *Service) enterLocked(ctx context.Context, circle string, subnet netip.Prefix, self Fiche, t Table) error {
-	members, revoked := s.resolveFor(circle, Table{Fiches: append([]Fiche{self}, t.Fiches...), Revocations: t.Revocations})
+	members, revoked := s.resolveFor(circle, subnet, Table{Fiches: append([]Fiche{self}, t.Fiches...), Revocations: t.Revocations})
 	if _, ok := members[s.id.NodeID]; !ok {
 		return errors.New("fiche d'adhésion invalide (chaîne d'invitations incomplète)")
 	}
@@ -232,14 +232,14 @@ func (s *Service) resolve(cur map[string]decoded, t Table) (map[string]decoded, 
 	for _, r := range s.revoked {
 		all.Revocations = append(all.Revocations, r.rev)
 	}
-	return s.resolveFor(s.circle, all)
+	return s.resolveFor(s.circle, s.subnet, all)
 }
 
 // resolveFor ne garde que les fiches dont la chaîne d'admissions remonte au
 // fondateur et dont les signatures sont valides ; pour chaque membre, la plus
 // haute version gagne. Les révocations valides sont absorbantes : une fois
 // révoqué, un membre le reste, quelle que soit la version de sa fiche.
-func (s *Service) resolveFor(circle string, t Table) (map[string]decoded, map[string]revocation) {
+func (s *Service) resolveFor(circle string, subnet netip.Prefix, t Table) (map[string]decoded, map[string]revocation) {
 	cands := map[string][]Fiche{}
 	for _, f := range t.Fiches {
 		var a Admission
@@ -263,6 +263,9 @@ func (s *Service) resolveFor(circle string, t Table) (map[string]decoded, map[st
 				d, err := check(f, circle, signer)
 				if err != nil {
 					continue
+				}
+				if subnet.IsValid() && !subnet.Contains(d.body.TunnelIP) {
+					continue // adresse hors du sous-réseau du cercle
 				}
 				if best == nil || d.body.Version > best.body.Version {
 					best = &d
@@ -369,6 +372,7 @@ func (s *Service) UpdateSelf(ctx context.Context, fn func(b *Body)) (bool, error
 	b.Announced = slices.Clone(b.Announced)
 	b.Observed = maps.Clone(b.Observed)
 	fn(&b)
+	b.Name = CleanName(b.Name)
 	before, _ := json.Marshal(mine.body)
 	after, _ := json.Marshal(b)
 	if bytes.Equal(before, after) {

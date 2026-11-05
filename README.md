@@ -83,7 +83,7 @@ Tous se règlent par variables d'environnement. Ceux de la page Réglages (nom, 
 | `WG_PUBLIC_ENDPOINTS` | vide | Adresses où vous joindre, séparées par des virgules |
 | `TUNNEL_SUBNET` | `10.42.0.0/24` | Sous-réseau du cercle, choisi à sa création |
 | `UI_LISTEN` | `:8080` | Adresse de l'interface |
-| `UI_PASSWORD` | vide | Mot de passe de la page de connexion (fortement conseillé) |
+| `UI_PASSWORD` | vide | Mot de passe de la page de connexion ; vide = mot de passe aléatoire créé dans le fichier `ui.password` du volume `/data` |
 | `UPLOAD_LIMIT` | `0` | Débit d'envoi maximal, au total ; suffixes K, M, G en puissances de 1024 (`20M` = 20 Mio/s), `0` = illimité |
 | `MAX_UPLOADS` | `3` | Envois simultanés ; au-delà, les autres patientent |
 | `UPLOAD_WINDOW` | vide | Créneau d'envoi quotidien, par exemple `01:00-07:00` |
@@ -123,6 +123,8 @@ docker compose pull && docker compose up -d
 L'image `ghcr.io/db-cl/cercle:1` suit les versions 1.x. La file de téléchargement et le cercle survivent aux redémarrages.
 
 ## Sécurité, en bref
+
+Détails, garanties et limites : [SECURITY.md](SECURITY.md).
 
 - Rien n'est exposé sur Internet à part le port UDP de WireGuard. L'API entre nœuds n'écoute que dans le tunnel.
 - Chaque nœud signe sa propre fiche (Ed25519) : personne ne peut se faire passer pour un autre membre, ni entrer sans invitation.

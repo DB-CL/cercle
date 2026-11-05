@@ -215,7 +215,7 @@ function showLogin() {
         h("label", { class: "remember" }, remember, "rester connecté sur cet appareil (30 jours)"),
         err,
         go),
-      h("p", { class: "foot" }, "le mot de passe est celui de la variable UI_PASSWORD du conteneur.")));
+      h("p", { class: "foot" }, "mot de passe : la variable UI_PASSWORD du conteneur, ou à défaut le fichier ui.password du volume /data.")));
   setView(card);
   setTimeout(() => pw.focus(), 50);
 }

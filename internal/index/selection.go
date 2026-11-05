@@ -63,7 +63,35 @@ func (ix *Index) SetSelection(ctx context.Context, sel Selection) error {
 	if err := ix.st.SetSetting(ctx, settingSelection, value); err != nil {
 		return err
 	}
+	// Ce qui n'est plus partagé disparaît de l'index tout de suite, sans
+	// attendre la fin du scan : plus rien n'en est servi dès maintenant.
+	if !sel.All {
+		if err := ix.purgeUnshared(ctx, sel); err != nil {
+			return err
+		}
+	}
 	ix.TriggerScan()
+	return nil
+}
+
+func (ix *Index) purgeUnshared(ctx context.Context, sel Selection) error {
+	rows, err := ix.st.R.QueryContext(ctx, "SELECT path FROM files WHERE parent = '' AND path <> ''")
+	if err != nil {
+		return fmt.Errorf("lecture de l'index : %w", err)
+	}
+	var gone []string
+	for rows.Next() {
+		var p string
+		if rows.Scan(&p) == nil && !sel.Shares(p) {
+			gone = append(gone, p)
+		}
+	}
+	rows.Close()
+	for _, p := range gone {
+		if _, err := ix.st.W.ExecContext(ctx, "DELETE FROM files WHERE path = ? OR (path > ? AND path < ?)", p, p+"/", p+"0"); err != nil {
+			return fmt.Errorf("retrait de %s de l'index : %w", p, err)
+		}
+	}
 	return nil
 }
 

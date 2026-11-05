@@ -21,6 +21,11 @@ import (
 const (
 	connectTimeout = 10 * time.Second
 	idleTimeout    = 60 * time.Second
+
+	// Plafonds de ce qu'on accepte d'un pair : un membre malveillant ne doit
+	// pas pouvoir épuiser la mémoire d'un autre avec une réponse sans fin.
+	maxResponse = 8 << 20   // table de gossip, page de dossier, info, adhésion
+	maxTree     = 512 << 20 // arborescence en NDJSON (500 000 fichiers ≈ 75 Mo)
 )
 
 // DialFunc ouvre une connexion TCP dans le tunnel.
@@ -133,7 +138,7 @@ func (c *Client) postJSON(ctx context.Context, peer netip.Addr, path string, in,
 		return err
 	}
 	defer resp.Body.Close()
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponse)).Decode(out); err != nil {
 		return fmt.Errorf("réponse de %v illisible (%s) : %w", peer, path, err)
 	}
 	return nil
@@ -157,7 +162,7 @@ func (c *Client) Tree(ctx context.Context, peer netip.Addr, dir string, fn func(
 		return err
 	}
 	defer resp.Body.Close()
-	dec := json.NewDecoder(resp.Body)
+	dec := json.NewDecoder(io.LimitReader(resp.Body, maxTree))
 	for {
 		var e index.Entry
 		err := dec.Decode(&e)
@@ -212,7 +217,7 @@ func (c *Client) getJSON(ctx context.Context, peer netip.Addr, path string, v an
 		return err
 	}
 	defer resp.Body.Close()
-	if err := json.NewDecoder(resp.Body).Decode(v); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponse)).Decode(v); err != nil {
 		return fmt.Errorf("réponse de %v illisible (%s) : %w", peer, path, err)
 	}
 	return nil

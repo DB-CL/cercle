@@ -6,6 +6,8 @@ services:
     container_name: cercle
     user: "1026:100"            # utilisateur du NAS propriétaire des dossiers (commande id sur le NAS)
     read_only: true
+    cap_drop: [ALL]                # aucune capacité Linux nécessaire (WireGuard en espace utilisateur)
+    security_opt: ["no-new-privileges:true"]
     tmpfs:
       - /tmp
     ports:

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -248,8 +249,8 @@ func (s *sink) check(src *source, rel string) {
 	if !gi.ModTime().Equal(wi.ModTime()) {
 		s.t.Errorf("%s : date %v, attendu %v", rel, gi.ModTime(), wi.ModTime())
 	}
-	if _, err := os.Stat(filepath.Join(s.dl, "alice", rel+".part")); err == nil {
-		s.t.Errorf("%s.part resté sur le disque", rel)
+	if parts, _ := filepath.Glob(filepath.Join(filepath.Dir(filepath.Join(s.dl, "alice", rel)), ".cercle-*.part")); len(parts) > 0 {
+		s.t.Errorf("fichiers partiels restés sur le disque : %v", parts)
 	}
 }
 
@@ -319,12 +320,13 @@ func TestChangedSourceRestarts(t *testing.T) {
 	dst.enqueue("f.bin")
 	// Un .part de l'ancienne version, puis le fichier change chez alice.
 	must(t, os.MkdirAll(filepath.Join(dst.dl, "alice"), 0o755))
-	must(t, os.WriteFile(filepath.Join(dst.dl, "alice", "f.bin.part"), random(5000), 0o644))
+	items, _ := dst.m.List(context.Background())
+	must(t, os.WriteFile(filepath.Join(dst.dl, "alice", fmt.Sprintf(".cercle-%d.part", items[0].ID)), random(5000), 0o644))
 	time.Sleep(10 * time.Millisecond)
 	src.put("f.bin", random(120000))
 
 	dst.start()
-	items := dst.wait("terminé", all(transfer.Done))
+	items = dst.wait("terminé", all(transfer.Done))
 	dst.check(src, "f.bin")
 	if items[0].Size != 120000 {
 		t.Errorf("taille en file = %d, attendu la nouvelle (120000)", items[0].Size)
@@ -431,7 +433,7 @@ func TestPriorityPauseRemove(t *testing.T) {
 		}
 		return st["a.bin"] == transfer.Paused && st["b.bin"] == transfer.Done
 	})
-	part := filepath.Join(dst.dl, "alice", "a.bin.part")
+	part := filepath.Join(dst.dl, "alice", fmt.Sprintf(".cercle-%d.part", ids["a.bin"]))
 	if _, err := os.Stat(part); err != nil {
 		t.Fatalf("le .part de a doit rester après une pause : %v", err)
 	}
@@ -443,6 +445,21 @@ func TestPriorityPauseRemove(t *testing.T) {
 	if len(items) != 2 {
 		t.Errorf("file après retrait : %+v", items)
 	}
+}
+
+// TestPartNameCollision : un fichier distant nommé « x.part » ne doit pas
+// pouvoir écraser, par le fichier partiel de « x », un fichier déjà reçu.
+func TestPartNameCollision(t *testing.T) {
+	a, b := random(3000), random(2000)
+	src := newSource(t, map[string][]byte{"x.part": a, "x": b})
+	dst := newSink(t, src, "", "")
+	dst.enqueue("x.part")
+	dst.start()
+	dst.wait("x.part reçu", all(transfer.Done))
+	dst.enqueue("x")
+	dst.wait("x reçu", all(transfer.Done))
+	dst.check(src, "x.part")
+	dst.check(src, "x")
 }
 
 func TestMaliciousPeer(t *testing.T) {

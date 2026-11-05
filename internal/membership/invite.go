@@ -310,7 +310,7 @@ func (s *Service) PrepareJoin(code Code, name string, announced []string) (JoinR
 	if s.now().UnixNano() >= code.ExpiresAt {
 		return JoinRequest{}, ErrInviteExpired
 	}
-	body, sig, err := NewBody(s.id.Sign, Body{Circle: code.Circle, NodeID: s.id.NodeID, Name: name,
+	body, sig, err := NewBody(s.id.Sign, Body{Circle: code.Circle, NodeID: s.id.NodeID, Name: CleanName(name),
 		TunnelIP: code.Assigned, Announced: announced, Version: 1, UpdatedAt: s.now().UnixNano()})
 	if err != nil {
 		return JoinRequest{}, err

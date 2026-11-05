@@ -9,7 +9,11 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -164,4 +168,36 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", MaxAge: -1,
 		HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: secureRequest(r)})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// LoadOrCreatePassword renvoie le mot de passe de l'interface stocké dans
+// path, ou en crée un aléatoire (droits 0600) s'il n'existe pas. Utilisé quand
+// UI_PASSWORD est vide : l'interface n'est jamais ouverte sans mot de passe,
+// car n'importe qui sur le réseau local (ou une page web, par DNS rebinding)
+// pourrait sinon s'inviter dans le cercle.
+func LoadOrCreatePassword(path string) (pass string, created bool, err error) {
+	if b, err := os.ReadFile(path); err == nil {
+		if p := strings.TrimSpace(string(b)); p != "" {
+			return p, false, nil
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return "", false, fmt.Errorf("lecture de %s : %w", path, err)
+	}
+	const alphabet = "abcdefghijkmnpqrstuvwxyz23456789" // sans 0, o, 1, l
+	raw := make([]byte, 16)
+	if _, err := rand.Read(raw); err != nil {
+		return "", false, err
+	}
+	var sb strings.Builder
+	for i, b := range raw {
+		if i > 0 && i%4 == 0 {
+			sb.WriteByte('-')
+		}
+		sb.WriteByte(alphabet[int(b)%len(alphabet)])
+	}
+	pass = sb.String()
+	if err := os.WriteFile(path, []byte(pass+"\n"), 0o600); err != nil {
+		return "", false, fmt.Errorf("écriture de %s : %w", path, err)
+	}
+	return pass, true, nil
 }

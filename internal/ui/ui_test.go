@@ -412,3 +412,19 @@ func TestEventsStream(t *testing.T) {
 	}
 	t.Fatalf("événements manquants : %v (%v)", want, sc.Err())
 }
+
+func TestLoadOrCreatePassword(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ui.password")
+	p1, created, err := LoadOrCreatePassword(path)
+	if err != nil || !created || len(p1) != 19 {
+		t.Fatalf("création : %q, %v, %v", p1, created, err)
+	}
+	fi, _ := os.Stat(path)
+	if fi.Mode().Perm() != 0o600 {
+		t.Errorf("droits %v, attendu 0600", fi.Mode().Perm())
+	}
+	p2, created, err := LoadOrCreatePassword(path)
+	if err != nil || created || p2 != p1 {
+		t.Fatalf("relecture : %q, %v, %v", p2, created, err)
+	}
+}

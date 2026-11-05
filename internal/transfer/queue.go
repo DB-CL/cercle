@@ -269,8 +269,11 @@ func (m *Manager) Enqueue(ctx context.Context, peerID string, paths []string) (a
 		}
 		err = m.opt.Remote.Tree(ctx, peer.IP, cp, func(e index.Entry) error {
 			// Le pair peut mentir : chaque chemin reçu est revalidé.
+			if added+len(pending) >= maxEnqueue {
+				return fmt.Errorf("plus de %d fichiers en une fois : sélectionnez des dossiers plus petits", maxEnqueue)
+			}
 			rp, err := index.CleanPath(e.Path)
-			if err != nil || rp == "" || e.IsDir || e.Size < 0 {
+			if err != nil || rp == "" || e.IsDir || e.Size < 0 || len(rp) > maxPathLen {
 				m.log.Warn("chemin distant refusé", "peer", peer.Name, "path", e.Path)
 				skipped++
 				return nil
@@ -293,6 +296,12 @@ func (m *Manager) Enqueue(ctx context.Context, peerID string, paths []string) (a
 	m.changed()
 	return added, skipped, nil
 }
+
+// Plafonds de ce qu'un pair peut faire ajouter à la file en une fois.
+const (
+	maxEnqueue = 1_000_000
+	maxPathLen = 4096
+)
 
 // insertBatch ajoute un lot de fichiers distants, dans une seule transaction.
 // Un fichier déjà présent avec la même taille est marqué terminé sans
@@ -468,20 +477,20 @@ func (m *Manager) Remove(ctx context.Context, id int64, deletePart bool) error {
 	}
 	// En cours : le transfert supprime lui-même le .part en s'arrêtant.
 	if !m.stopJob(id, reason) && deletePart {
-		m.removePart(it.DestPath)
+		m.removePart(it)
 	}
 	m.changed()
 	return nil
 }
 
-func (m *Manager) removePart(dest string) {
+func (m *Manager) removePart(it Item) {
 	root, err := os.OpenRoot(m.opt.Dir)
 	if err != nil {
 		return
 	}
 	defer root.Close()
-	if err := root.Remove(dest + ".part"); err != nil && !errors.Is(err, os.ErrNotExist) {
-		m.log.Warn("suppression du fichier partiel", "path", dest, "err", err)
+	if err := root.Remove(partPath(it)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		m.log.Warn("suppression du fichier partiel", "path", it.DestPath, "err", err)
 	}
 }
 
@@ -616,7 +625,7 @@ func (m *Manager) runJob(ctx context.Context, it Item, j *job) {
 	case reason == stopRemove:
 		log.Info("téléchargement retiré")
 	case reason == stopRemovePart:
-		m.removePart(it.DestPath)
+		m.removePart(it)
 		log.Info("téléchargement retiré, fichier partiel supprimé")
 	case err == nil:
 		_, _ = m.exec(bg, `UPDATE queue SET status = 'done', bytes_done = size, last_error = '', updated_at = ? WHERE id = ?`, nano(now), it.ID)

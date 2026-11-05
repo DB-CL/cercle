@@ -269,6 +269,11 @@ func TestSelection(t *testing.T) {
 	}
 
 	must(t, ix.SetSelection(ctx, Selection{Folders: []string{"photos", "films", "films"}}))
+	// Retiré sur-le-champ, avant même le scan suivant.
+	if f, _, err := ix.Open(ctx, "musique/b.flac"); err == nil {
+		f.Close()
+		t.Fatal("dossier décoché encore servi avant la réindexation")
+	}
 	if _, err := ix.Scan(ctx); err != nil {
 		t.Fatal(err)
 	}

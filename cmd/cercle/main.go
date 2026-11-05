@@ -106,15 +106,25 @@ func serve() error {
 	}
 	defer n.Close()
 	log.Info("démarrage", "version", buildinfo.String(), "node", n.Config().NodeName, "public_key", n.PublicKey().String(), "ui", cfg.UIListen)
-	if cfg.UIPassword == "" {
-		log.Warn("interface sans mot de passe : définissez UI_PASSWORD si le LAN n'est pas de confiance")
+	password := cfg.UIPassword
+	if password == "" {
+		pwFile := filepath.Join(cfg.DataDir, "ui.password")
+		var created bool
+		if password, created, err = ui.LoadOrCreatePassword(pwFile); err != nil {
+			return err
+		}
+		if created {
+			log.Warn("UI_PASSWORD absent : mot de passe aléatoire créé, à lire dans le fichier ui.password du volume /data", "file", pwFile)
+		} else {
+			log.Info("UI_PASSWORD absent : mot de passe lu dans le fichier ui.password du volume /data", "file", pwFile)
+		}
 	}
 
 	var wgr sync.WaitGroup
 	defer wgr.Wait()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	uiSrv := &ui.Server{Node: n, Password: cfg.UIPassword, Logger: log.With("module", "ui")}
+	uiSrv := &ui.Server{Node: n, Password: password, Logger: log.With("module", "ui")}
 	wgr.Go(func() {
 		if err := uiSrv.Serve(ctx, cfg.UIListen); err != nil {
 			log.Error("interface arrêtée", "err", err)

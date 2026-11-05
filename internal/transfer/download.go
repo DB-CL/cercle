@@ -28,7 +28,7 @@ func (m *Manager) download(ctx context.Context, it Item, j *job) error {
 	defer root.Close()
 
 	dest := it.DestPath
-	part := dest + ".part"
+	part := partPath(it)
 	if fi, err := root.Stat(dest); err == nil && fi.Mode().IsRegular() && fi.Size() == it.Size {
 		return nil // déjà là
 	}
@@ -89,6 +89,11 @@ func (m *Manager) download(ctx context.Context, it Item, j *job) error {
 		return fmt.Errorf("ouverture de %s : %w", part, err)
 	}
 	defer f.Close()
+	// Espace disque : un pair ne doit pas pouvoir remplir le disque, même en
+	// annonçant un petit fichier puis en envoyant bien plus.
+	if free, ok := diskFree(m.opt.Dir); ok && free-(total-offset) < minFree {
+		return fmt.Errorf("espace disque insuffisant : %d octets à recevoir, %d libres (réserve de %d)", total-offset, free, int64(minFree))
+	}
 	if err := f.Truncate(offset); err != nil {
 		return fmt.Errorf("préparation de %s : %w", part, err)
 	}
@@ -100,8 +105,20 @@ func (m *Manager) download(ctx context.Context, it Item, j *job) error {
 	j.start.Store(time.Now().UnixNano())
 
 	buf := make([]byte, burst)
+	sinceCheck := int64(0)
 	for written := offset; written < total; {
-		n, rerr := throttledRead(ctx, m.limiter, resp.Body, buf)
+		chunk := buf
+		if rem := total - written; rem < int64(len(chunk)) {
+			chunk = chunk[:rem] // jamais plus que la taille annoncée
+		}
+		n, rerr := throttledRead(ctx, m.limiter, resp.Body, chunk)
+		sinceCheck += int64(n)
+		if sinceCheck >= diskCheckEvery {
+			sinceCheck = 0
+			if free, ok := diskFree(m.opt.Dir); ok && free < minFree {
+				return fmt.Errorf("espace disque insuffisant : transfert suspendu à l'octet %d", written)
+			}
+		}
 		if n > 0 {
 			if _, err := f.Write(buf[:n]); err != nil {
 				return fmt.Errorf("écriture de %s : %w", part, err)
@@ -137,6 +154,18 @@ func (m *Manager) download(ctx context.Context, it Item, j *job) error {
 	}
 	return nil
 }
+
+// partPath est le fichier partiel d'un élément : caché, propre à l'élément,
+// dans le dossier de destination. Le nommer « <destination>.part » laisserait
+// un pair écraser un fichier déjà reçu qui s'appellerait justement ainsi.
+func partPath(it Item) string {
+	return path.Join(path.Dir(it.DestPath), ".cercle-"+strconv.FormatInt(it.ID, 10)+".part")
+}
+
+const (
+	minFree        = 1 << 30   // espace libre à toujours laisser sur le disque de réception
+	diskCheckEvery = 256 << 20 // vérification de l'espace libre pendant un transfert
+)
 
 // parseContentRange lit « bytes <début>-<fin>/<taille> ».
 func parseContentRange(s string) (start, size int64, err error) {

@@ -3,6 +3,8 @@ x-node: &node
   image: ${CERCLE_IMAGE:-cercle:e2e}
   user: "${CERCLE_UID:-65532}:${CERCLE_GID:-65532}"
   read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
   tmpfs:
     - /tmp
   environment: &env
