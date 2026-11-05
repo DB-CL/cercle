@@ -229,7 +229,7 @@ Ce qui manque :
 
 Ce qui marche :
 
-- Page unique en français, embarquée dans le binaire (`web/` : HTML, CSS et JavaScript sans framework, sans étape de build, sans CDN). Thème clair ou sombre selon le système, utilisable sur mobile.
+- Page unique en français, embarquée dans le binaire (`web/` : HTML, CSS et JavaScript sans framework, sans étape de build, sans CDN). Style « terminal » : police à chasse fixe du système, toute la largeur, listes denses en colonnes, sombre ambré ou clair façon papier listing selon le système, barre d'état en bas, raccourcis 1, 2, 3. Utilisable sur mobile.
 - Accueil hors cercle : « Créer un cercle » ou « Rejoindre avec un code ».
 - **Membres** : en ligne ou non, adresse, taille partagée, dernière poignée de main, endpoint. Inviter (code à copier, invitations en attente annulables), révoquer, parcourir.
 - **Partage d'un membre** : fil d'Ariane, dossiers d'abord, cases à cocher conservées pendant la navigation, barre « Télécharger la sélection » avec le volume total.

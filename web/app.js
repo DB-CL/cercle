@@ -134,6 +134,7 @@ function route() {
 }
 
 async function render() {
+  if (document.body.classList.contains("login-mode")) return; // l'écran de connexion reste affiché
   const { view, rest } = route();
   state.view = view;
   document.getElementById("selbar")?.remove();
@@ -153,6 +154,7 @@ async function loadStatus() {
   document.getElementById("nav").hidden = !st.in_circle;
   document.getElementById("whoami").textContent = st.self ? st.self.display_name + " · " + st.self.tunnel_ip : "";
   document.getElementById("logout").hidden = !st.password_set;
+  updateStatusbar();
   const banner = document.getElementById("banner");
   banner.hidden = st.password_set;
   banner.textContent = st.password_set ? "" : "L'interface n'est pas protégée : définissez UI_PASSWORD si d'autres personnes utilisent votre réseau local.";
@@ -165,52 +167,55 @@ function showLogin() {
   state.es?.close();
   state.es = null;
   document.body.classList.add("login-mode");
-  const pw = h("input", { type: "password", id: "pw", name: "password", autocomplete: "current-password", required: true, "aria-label": "Mot de passe", placeholder: "Mot de passe" });
+  const pw = h("input", { type: "password", id: "pw", name: "password", autocomplete: "current-password", required: true, "aria-label": "Mot de passe" });
   const toggle = h("button", {
-    type: "button",
+    type: "button", class: "plain muted",
     onclick: () => {
       const show = pw.type === "password";
       pw.type = show ? "text" : "password";
-      toggle.textContent = show ? "Masquer" : "Afficher";
+      toggle.textContent = show ? "masquer" : "afficher";
       pw.focus();
     },
-  }, "Afficher");
+  }, "afficher");
   const remember = h("input", { type: "checkbox", checked: true });
   const err = h("p", { class: "err", role: "alert" });
-  const go = h("button", { class: "primary", type: "submit" }, "Se connecter");
+  const go = h("button", { class: "primary go", type: "submit" }, "connexion");
+  const host = location.hostname || "cercle";
   const card = h("div", { class: "login" },
-    h("div", { class: "orbit", "aria-hidden": "true" }, h("span", { class: "sat" }), h("span", { class: "sat" }), h("span", { class: "sat" })),
-    h("h1", {}, "Cercle"),
-    h("p", { class: "tagline" }, "Le partage privé entre amis"),
-    h("form", {
-      onsubmit: async (ev) => {
-        ev.preventDefault();
-        err.textContent = "";
-        go.disabled = true;
-        go.textContent = "Connexion…";
-        try {
-          await api("POST", "/login", { password: pw.value, remember: remember.checked });
-          document.body.classList.remove("login-mode");
-          await boot();
-        } catch (e) {
-          err.textContent = e.message;
-          card.classList.remove("shake");
-          void card.offsetWidth; // relance l'animation
-          card.classList.add("shake");
-          pw.select();
-        } finally {
-          go.disabled = false;
-          go.textContent = "Se connecter";
-        }
+    h("div", { class: "bar-top" }, h("span", {}, "CERCLE"), h("span", {}, host)),
+    h("div", { class: "body" },
+      h("pre", { class: "banner-txt", "aria-hidden": "true" },
+        "  ___ ___ ___  ___ _    ___\n / __| __| _ \\/ __| |  | __|\n| (__| _||   / (__| |__| _|\n \\___|___|_|_\\\\___|____|___|"),
+      h("p", { class: "motd" }, "partage privé entre amis, chiffré par WireGuard."),
+      h("form", {
+        onsubmit: async (ev) => {
+          ev.preventDefault();
+          err.textContent = "";
+          go.disabled = true;
+          go.textContent = "vérification…";
+          try {
+            await api("POST", "/login", { password: pw.value, remember: remember.checked });
+            document.body.classList.remove("login-mode");
+            await boot();
+          } catch (e) {
+            err.textContent = e.message.toLowerCase().replace(/\.$/, "");
+            card.classList.remove("shake");
+            void card.offsetWidth; // relance l'animation
+            card.classList.add("shake");
+            pw.select();
+          } finally {
+            go.disabled = false;
+            go.textContent = "connexion";
+          }
+        },
       },
-    },
-      // Nom d'utilisateur invisible : aide les gestionnaires de mots de passe à enregistrer l'accès.
-      h("input", { type: "text", name: "username", autocomplete: "username", value: "cercle", hidden: true }),
-      h("div", { class: "pw" }, pw, toggle),
-      h("label", { class: "remember" }, remember, "Rester connecté sur cet appareil"),
-      go,
-      err),
-    h("p", { class: "foot" }, "Le mot de passe est celui défini sur le NAS (UI_PASSWORD)."));
+        // Nom d'utilisateur invisible : aide les gestionnaires de mots de passe à enregistrer l'accès.
+        h("input", { type: "text", name: "username", autocomplete: "username", value: "cercle", hidden: true }),
+        h("div", { class: "prompt" }, h("label", { for: "pw", class: "cursor" }, "mot de passe "), pw, toggle),
+        h("label", { class: "remember" }, remember, "rester connecté sur cet appareil (30 jours)"),
+        err,
+        go),
+      h("p", { class: "foot" }, "le mot de passe est celui de la variable UI_PASSWORD du conteneur.")));
   setView(card);
   setTimeout(() => pw.focus(), 50);
 }
@@ -287,7 +292,7 @@ async function renderMembers() {
       ta.select();
       loadPending();
     }),
-  }, "Inviter un ami");
+  }, "inviter un ami");
 
   async function loadPending() {
     const invs = (await api("GET", "/invites")).filter((i) => !i.used_at && toDate(i.expires_at) > new Date());
@@ -317,17 +322,20 @@ async function renderMembers() {
 async function loadMembers(list) {
   const members = await api("GET", "/members");
   state.members = members;
+  updateStatusbar();
   const active = members.filter((m) => !m.revoked);
   const revoked = members.filter((m) => m.revoked);
-  const card = (m) => {
-    const metas = [h("span", { class: "mono" }, m.tunnel_ip)];
-    if (m.share_files || m.self) metas.push(h("span", {}, fmtSize(m.share_size) + " partagés, " + plural(m.share_files, "fichier", "fichiers")));
-    if (!m.self) metas.push(h("span", {}, m.online ? "en ligne" : "vu " + fmtAgo(m.last_handshake)));
-    if (m.endpoint && !m.self) metas.push(h("span", { class: "mono" }, m.endpoint));
-    if (m.conflict) metas.push(h("span", { class: "err" }, "conflit d'adresse, en cours de résolution"));
+  const head = h("div", { class: "mrow head" },
+    h("span", {}, "état"), h("span", {}, "nom"), h("span", {}, "adresse"), h("span", {}, "partage"),
+    h("span", {}, "vu"), h("span", {}, "endpoint"), h("span", {}, ""));
+  const row = (m) => {
+    let st;
+    if (m.revoked) st = h("span", { class: "state-bad" }, "révoqué");
+    else if (m.self) st = h("span", { class: "state-on" }, "● local");
+    else st = h("span", { class: m.online ? "state-on" : "state-off" }, m.online ? "● actif" : "○ absent");
     const actions = [];
     if (!m.self && !m.revoked) {
-      actions.push(h("a", { class: "btn", href: "#/partage/" + encodeURIComponent(m.node_id) + "/" }, "Parcourir"));
+      actions.push(h("a", { class: "btn", href: "#/partage/" + encodeURIComponent(m.node_id) + "/" }, "parcourir"));
       actions.push(h("button", {
         class: "danger",
         onclick: (ev) => {
@@ -338,21 +346,24 @@ async function loadMembers(list) {
             loadMembers(list);
           });
         },
-      }, "Révoquer"));
+      }, "révoquer"));
     }
-    return h("div", { class: "card member" },
-      h("span", { class: "dot" + (m.online && !m.revoked ? " on" : ""), title: m.online ? "en ligne" : "hors ligne" }),
-      h("div", { class: "who" },
-        h("div", { class: "name" }, m.display_name,
-          m.self && h("span", { class: "badge you" }, "vous"),
-          m.revoked && h("span", { class: "badge bad" }, "révoqué")),
-        h("div", { class: "meta" }, metas)),
-      h("div", { class: "actions" }, actions));
+    const share = (m.share_files || m.self) ? fmtSize(m.share_size) + " · " + nf0.format(m.share_files) + " fich." : "?";
+    return h("div", { class: "mrow" },
+      st,
+      h("span", { class: "name" }, m.display_name, m.self && h("span", { class: "badge" }, "vous"),
+        m.conflict && h("span", { class: "badge bad" }, "conflit d'adresse")),
+      h("span", { class: "col-ip mono" }, m.tunnel_ip),
+      h("span", { class: "col-share" }, share),
+      h("span", { class: "col-seen muted" }, m.self ? "" : (m.online ? "maintenant" : fmtAgo(m.last_handshake))),
+      h("span", { class: "col-ep mono muted" }, m.self ? "" : (m.endpoint || "")),
+      h("span", { class: "actions" }, actions));
   };
-  const nodes = active.map(card);
+  const nodes = [h("div", { class: "list cols-m" }, head, ...active.map(row))];
   if (active.length === 1) nodes.push(h("p", { class: "muted" }, "Vous êtes seul pour l'instant. Invitez un ami pour commencer à échanger."));
   if (revoked.length) {
-    nodes.push(h("details", {}, h("summary", { class: "muted" }, plural(revoked.length, "membre révoqué", "membres révoqués")), ...revoked.map(card)));
+    nodes.push(h("details", { class: "members-revoked" }, h("summary", {}, plural(revoked.length, "membre révoqué", "membres révoqués")),
+      h("div", { class: "list cols-m" }, ...revoked.map(row))));
   }
   list.replaceChildren(...nodes);
 }
@@ -372,9 +383,9 @@ async function renderShare(peerID, path) {
   const href = (p) => "#/partage/" + encodeURIComponent(peerID) + "/" + p.split("/").map(encodeURIComponent).join("/");
   const parts = path ? path.split("/") : [];
   const crumbs = h("nav", { class: "crumbs", "aria-label": "Chemin" },
-    h("a", { href: "#/membres" }, "Membres"), h("span", { class: "sep" }, "›"),
+    h("a", { href: "#/membres" }, "membres"), h("span", { class: "sep" }, "/"),
     parts.length ? h("a", { href: href("") }, name) : h("span", { class: "here" }, name),
-    parts.map((p, i) => [h("span", { class: "sep" }, "›"),
+    parts.map((p, i) => [h("span", { class: "sep" }, "/"),
       i === parts.length - 1 ? h("span", { class: "here" }, p) : h("a", { href: href(parts.slice(0, i + 1).join("/")) }, p)]));
   const list = h("div", { class: "list" }, h("div", { class: "empty" }, "Lecture du partage de " + name + "…"));
   const more = h("div");
@@ -396,10 +407,10 @@ async function renderShare(peerID, path) {
         const msg = res.added ? plural(res.added, "fichier ajouté", "fichiers ajoutés") + " à la file." : "Rien de nouveau : ces fichiers sont déjà en file ou présents.";
         toast(res.skipped ? msg + " " + plural(res.skipped, "chemin refusé", "chemins refusés") + "." : msg);
       }),
-    }, "Télécharger la sélection");
+    }, "télécharger");
     bar.replaceChildren(h("div", { class: "inner" },
       h("div", { class: "what" }, plural(sel.size, "élément sélectionné", "éléments sélectionnés") + ", " + fmtSize(total)),
-      h("button", { onclick: () => { sel.clear(); updateBar(); for (const cb of list.querySelectorAll("input[type=checkbox]")) { cb.checked = false; cb.closest(".row")?.classList.remove("sel"); } } }, "Tout désélectionner"),
+      h("button", { onclick: () => { sel.clear(); updateBar(); for (const cb of list.querySelectorAll("input[type=checkbox]")) { cb.checked = false; cb.closest(".row")?.classList.remove("sel"); } } }, "désélectionner"),
       go));
   };
   updateBar();
@@ -413,7 +424,7 @@ async function renderShare(peerID, path) {
         }
       },
     }),
-    h("span", {}, "Nom"), h("span", { class: "num" }, "Taille"), h("span", { class: "num date" }, "Modifié"))];
+    h("span", {}, "nom"), h("span", { class: "num" }, "taille"), h("span", { class: "num date" }, "modifié"))];
 
   const addEntries = (entries) => {
     for (const e of entries) {
@@ -462,7 +473,7 @@ const FILTERS = [
   { key: "termines", label: "Terminés", status: "done" },
 ];
 const STATE_LABEL = {
-  queued: "en file", active: "en cours", paused: "suspendu", waiting: "en attente", done: "terminé", error: "erreur",
+  queued: "file", active: "actif", paused: "pause", waiting: "attente", done: "ok", error: "erreur",
 };
 const dlState = { filter: "en-cours", limit: 200, selected: new Set(), updateBulk: null };
 
@@ -473,7 +484,7 @@ function countFor(sum, status) {
 async function renderDownloads() {
   const filters = h("div", { class: "filters" });
   const bulk = h("div", { class: "actions" });
-  const list = h("div", { class: "list" });
+  const list = h("div", { class: "list cols-d" });
   const more = h("div");
   const summary = h("p", { class: "muted small" });
   setView(h("div", { class: "section-head" }, h("h1", {}, "Téléchargements"), bulk), summary, filters, list, more);
@@ -523,7 +534,9 @@ async function renderDownloads() {
     };
     dlState.updateBulk();
 
-    list.replaceChildren(...(data.items.length ? data.items.map((it) => dlRow(it, load)) : [h("div", { class: "empty" }, "Aucun élément ici.")]));
+    const head = h("div", { class: "dl head" }, h("span", {}, ""), h("span", {}, "fichier"), h("span", {}, "progression"),
+      h("span", { class: "num" }, "%"), h("span", { class: "num" }, "taille"), h("span", {}, "état"), h("span", {}, ""));
+    list.replaceChildren(...(data.items.length ? [head, ...data.items.map((it) => dlRow(it, load))] : [h("div", { class: "empty" }, "Aucun élément ici.")]));
     more.replaceChildren(data.items.length >= dlState.limit
       ? h("p", {}, h("button", { onclick: () => { dlState.limit += 200; load(); } }, "Afficher plus"))
       : "");
@@ -538,10 +551,13 @@ function dlRow(it, reload) {
   const pct = it.size ? Math.min(100, (it.bytes_done / it.size) * 100) : (it.status === "done" ? 100 : 0);
   const fill = h("i");
   fill.style.width = pct.toFixed(1) + "%";
-  const info = h("div", { class: "small muted", "data-info": "" }, progressText(it));
   const cb = h("input", {
     type: "checkbox", checked: dlState.selected.has(it.id), "aria-label": "Sélectionner " + name,
-    onchange: () => { if (cb.checked) dlState.selected.add(it.id); else dlState.selected.delete(it.id); dlState.updateBulk?.(); },
+    onchange: () => {
+      if (cb.checked) dlState.selected.add(it.id); else dlState.selected.delete(it.id);
+      cb.closest(".dl").classList.toggle("sel", cb.checked);
+      dlState.updateBulk?.();
+    },
   });
   const one = (action, label, cls) => h("button", {
     class: cls || "",
@@ -557,36 +573,39 @@ function dlRow(it, reload) {
   }, label);
   const actions = [];
   if (["active", "queued", "waiting"].includes(it.status)) {
-    actions.push(one("pause", "Suspendre"));
-    if (!it.priority && it.status !== "active") actions.push(one("priority", "Prioritaire"));
+    actions.push(one("pause", "pause"));
+    if (!it.priority && it.status !== "active") actions.push(one("priority", "prio"));
   }
-  if (it.status === "waiting") actions.push(one("resume", "Réessayer"));
-  if (it.status === "paused") actions.push(one("resume", "Reprendre"));
-  if (it.status === "error") actions.push(one("retry", "Relancer"));
-  actions.push(one("remove", "Retirer", "danger"));
-  const row = h("div", { class: "dl " + it.status, "data-id": it.id },
+  if (it.status === "waiting") actions.push(one("resume", "réessayer"));
+  if (it.status === "paused") actions.push(one("resume", "reprendre"));
+  if (it.status === "error") actions.push(one("retry", "relancer"));
+  actions.push(one("remove", "retirer", "danger"));
+  const [sizeTxt, stateTxt] = progressCols(it);
+  const row = h("div", { class: "dl " + it.status + (dlState.selected.has(it.id) ? " sel" : ""), "data-id": it.id },
     cb,
     h("div", {},
-      h("div", { class: "title" }, name, it.priority ? h("span", { class: "badge" }, "prioritaire") : null),
-      h("div", { class: "path" }, it.peer_name + " · " + it.remote_path),
-      h("div", { class: "bar" }, fill),
-      info,
-      it.last_error && it.status !== "done" ? h("div", { class: "err" }, it.last_error) : null),
-    h("div", { class: "actions" }, actions));
+      h("div", { class: "title" }, name, it.priority ? h("span", { class: "badge" }, "prio") : null),
+      h("div", { class: "path" }, it.peer_name + ":" + it.remote_path)),
+    h("div", { class: "bar" }, fill),
+    h("span", { class: "num", "data-pct": "" }, Math.floor(pct) + "%"),
+    h("span", { class: "num", "data-size": "" }, sizeTxt),
+    h("span", { "data-state": "" }, stateTxt),
+    h("span", { class: "actions" }, actions),
+    it.last_error && it.status !== "done" ? h("div", { class: "err" }, it.last_error) : null);
   return row;
 }
 
-function progressText(it) {
-  const parts = [h("span", { class: "state " + it.status }, STATE_LABEL[it.status] || it.status), " · "];
-  if (it.status === "done") parts.push(fmtSize(it.size));
-  else parts.push(fmtSize(it.bytes_done) + " sur " + fmtSize(it.size));
+// progressCols renvoie la colonne « taille » et la colonne « état ».
+function progressCols(it) {
+  const size = it.status === "done" ? fmtSize(it.size) : fmtSize(it.bytes_done) + "/" + fmtSize(it.size);
+  const st = [h("span", { class: "state " + it.status }, STATE_LABEL[it.status] || it.status)];
   if (it.status === "active" && it.rate > 0) {
     const left = (it.size - it.bytes_done) / it.rate;
-    parts.push(" · " + fmtRate(it.rate) + (left >= 1 ? " · reste " + fmtDuration(left) : ""));
+    st.push(" " + fmtRate(it.rate) + (left >= 1 ? " " + fmtDuration(left) : ""));
   }
-  if (it.status === "waiting" && it.next_attempt) parts.push(" · nouvel essai " + fmtAgo(it.next_attempt));
-  if (it.attempts) parts.push(" · " + plural(it.attempts, "tentative", "tentatives"));
-  return parts;
+  if (it.status === "waiting" && it.next_attempt) st.push(" " + fmtAgo(it.next_attempt));
+  if (it.attempts) st.push(" ×" + it.attempts);
+  return [size, st];
 }
 
 // Progression en direct : mise à jour sur place, sans tout redessiner. Si
@@ -594,6 +613,9 @@ function progressText(it) {
 // commencé), la liste est relue pour que les statuts restent exacts.
 let lastActive = "";
 function applyProgress(items) {
+  state.rate = items.reduce((t, it) => t + (it.rate || 0), 0);
+  state.rateAt = Date.now();
+  updateStatusbar();
   if (state.view !== "telechargements") return;
   const ids = items.map((it) => it.id).sort().join(",");
   if (ids !== lastActive) {
@@ -605,7 +627,10 @@ function applyProgress(items) {
     if (!row) continue;
     const pct = it.size ? Math.min(100, (it.bytes_done / it.size) * 100) : 0;
     row.querySelector(".bar > i").style.width = pct.toFixed(1) + "%";
-    row.querySelector("[data-info]").replaceChildren(...progressText(it));
+    row.querySelector("[data-pct]").textContent = Math.floor(pct) + "%";
+    const [sizeTxt, stateTxt] = progressCols(it);
+    row.querySelector("[data-size]").textContent = sizeTxt;
+    row.querySelector("[data-state]").replaceChildren(...stateTxt);
   }
 }
 
@@ -614,7 +639,23 @@ function updateNavCount(sum) {
   const el = document.getElementById("nav-count");
   el.hidden = !n;
   el.textContent = nf0.format(n);
+  state.queueCount = n;
+  updateStatusbar();
 }
+
+// Barre d'état du bas : membres en ligne, file, débit de réception.
+function updateStatusbar() {
+  const bar = document.getElementById("statusbar");
+  if (!state.status?.in_circle) { bar.hidden = true; return; }
+  bar.hidden = false;
+  const others = state.members.filter((m) => !m.self && !m.revoked);
+  document.getElementById("sb-online").textContent = others.filter((m) => m.online).length + "/" + others.length;
+  document.getElementById("sb-queue").textContent = nf0.format(state.queueCount || 0);
+  const fresh = state.rateAt && Date.now() - state.rateAt < 2500;
+  document.getElementById("sb-rate").textContent = fmtRate(fresh ? state.rate : 0);
+  document.getElementById("sb-version").textContent = "cercle " + (state.status.version || "");
+}
+setInterval(updateStatusbar, 3000); // le débit retombe à 0 quand les mises à jour cessent
 
 // ---------- Réglages ----------
 
@@ -700,6 +741,12 @@ function debounce(fn, ms) {
   return () => { clearTimeout(t); t = setTimeout(fn, ms); };
 }
 
+// Membres relus sans rien afficher, pour la barre d'état des autres vues.
+function refreshMembersQuietly() {
+  if (!state.status?.in_circle) return;
+  api("GET", "/members").then((m) => { state.members = m; updateStatusbar(); }).catch(() => {});
+}
+
 function connectEvents() {
   state.es?.close();
   const es = new EventSource("/ui/api/events");
@@ -711,11 +758,21 @@ function connectEvents() {
   });
   es.addEventListener("members", debounce(() => {
     if (state.view === "membres" && state.refreshMembers) state.refreshMembers().catch(() => {});
+    else refreshMembersQuietly();
   }, 500));
   es.addEventListener("settings", () => loadStatus().catch(() => {}));
 }
 
 // ---------- Démarrage ----------
+
+// Raccourcis clavier : 1, 2, 3 pour les vues, ? pour l'aide.
+document.addEventListener("keydown", (ev) => {
+  if (ev.ctrlKey || ev.metaKey || ev.altKey || document.body.classList.contains("login-mode")) return;
+  if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) return;
+  const views = { "1": "#/membres", "2": "#/telechargements", "3": "#/reglages" };
+  if (views[ev.key] && state.status?.in_circle) { location.hash = views[ev.key]; ev.preventDefault(); }
+  if (ev.key === "?") toast("raccourcis : 1 membres · 2 téléchargements · 3 réglages");
+});
 
 window.addEventListener("hashchange", () => render().catch((e) => { if (!e.login) toast(e.message, true); }));
 
@@ -723,7 +780,10 @@ async function boot() {
   try {
     await loadStatus();
     await render();
-    if (state.status.in_circle) api("GET", "/queue?limit=1").then((d) => updateNavCount(d.summary)).catch(() => {});
+    if (state.status.in_circle) {
+      api("GET", "/queue?limit=1").then((d) => updateNavCount(d.summary)).catch(() => {});
+      refreshMembersQuietly();
+    }
     connectEvents();
   } catch (e) {
     if (e.login) return; // la page de connexion est affichée

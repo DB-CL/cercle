@@ -13,18 +13,25 @@
     <div class="top-inner">
       <a class="brand" href="#/membres"><span class="logo" aria-hidden="true"></span>Cercle</a>
       <nav id="nav" class="tabs" hidden>
-        <a href="#/membres" data-view="membres">Membres</a>
-        <a href="#/telechargements" data-view="telechargements">Téléchargements <span id="nav-count" class="count" hidden></span></a>
-        <a href="#/reglages" data-view="reglages">Réglages</a>
+        <a href="#/membres" data-view="membres"><span class="key">1</span>membres</a>
+        <a href="#/telechargements" data-view="telechargements"><span class="key">2</span>téléchargements <span id="nav-count" class="count" hidden></span></a>
+        <a href="#/reglages" data-view="reglages"><span class="key">3</span>réglages</a>
       </nav>
       <span id="whoami" class="whoami"></span>
-      <button id="logout" class="link logout" type="button" hidden>Se déconnecter</button>
+      <button id="logout" class="logout" type="button" hidden>déconnexion</button>
     </div>
   </header>
   <div id="banner" class="banner" hidden></div>
   <main id="app" class="wrap" aria-live="polite">
     <p class="muted">Chargement…</p>
   </main>
+  <footer id="statusbar" class="statusbar" hidden>
+    <span class="on">en ligne<b id="sb-online">0/0</b></span>
+    <span>file<b id="sb-queue">0</b></span>
+    <span class="rate">↓<b id="sb-rate">0 o/s</b></span>
+    <span class="keys">1 2 3 : vues · ? : aide</span>
+    <span id="sb-version"></span>
+  </footer>
   <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
   <script src="app.js"></script>
 </body>
