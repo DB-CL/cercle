@@ -245,24 +245,28 @@ func (m *Manager) Enqueue(ctx context.Context, peerID string, paths []string) (a
 	}
 	defer root.Close()
 
+	// Les fichiers reçus du pair sont écrits par lots, chacun dans une
+	// transaction courte : jamais de transaction ouverte pendant un appel
+	// réseau. Sinon, l'unique connexion d'écriture resterait prise pendant que
+	// le client attend le verrou du cercle, que tient justement une mise à
+	// jour de fiche en attente de cette même connexion (interblocage).
+	const batch = 1000
+	pending := make([]index.Entry, 0, batch)
+	flush := func() error {
+		if len(pending) == 0 {
+			return nil
+		}
+		n, err := m.insertBatch(ctx, root, peer, folder, pending)
+		added += n
+		pending = pending[:0]
+		return err
+	}
 	for _, p := range paths {
 		cp, err := index.CleanPath(p)
 		if err != nil {
 			skipped++
 			continue
 		}
-		tx, err := m.opt.Store.W.BeginTx(ctx, nil)
-		if err != nil {
-			return added, skipped, fmt.Errorf("ajout à la file : %w", err)
-		}
-		stmt, err := tx.PrepareContext(ctx, `INSERT OR IGNORE INTO queue
-			(peer_id, peer_name, remote_path, dest_path, size, mtime, etag, status, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-		if err != nil {
-			tx.Rollback()
-			return added, skipped, fmt.Errorf("ajout à la file : %w", err)
-		}
-		now := nano(m.now())
 		err = m.opt.Remote.Tree(ctx, peer.IP, cp, func(e index.Entry) error {
 			// Le pair peut mentir : chaque chemin reçu est revalidé.
 			rp, err := index.CleanPath(e.Path)
@@ -271,41 +275,69 @@ func (m *Manager) Enqueue(ctx context.Context, peerID string, paths []string) (a
 				skipped++
 				return nil
 			}
-			dest := folder + "/" + rp
-			status := Queued
-			if fi, err := root.Stat(dest); err == nil && fi.Mode().IsRegular() && fi.Size() == e.Size {
-				// Déjà là : terminé sans transfert, sans doublon si la file le connaît déjà.
-				var known int
-				if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM queue WHERE peer_id = ? AND remote_path = ?`, peer.ID, rp).Scan(&known); err != nil {
-					return fmt.Errorf("ajout de %s : %w", rp, err)
-				}
-				if known > 0 {
-					return nil
-				}
-				status = Done
-			}
-			res, err := stmt.ExecContext(ctx, peer.ID, peer.Name, rp, dest, e.Size, e.MTimeNano,
-				etagOf(e.Size, e.MTimeNano), string(status), now, now)
-			if err != nil {
-				return fmt.Errorf("ajout de %s : %w", rp, err)
-			}
-			if n, _ := res.RowsAffected(); n > 0 {
-				added++
+			e.Path = rp
+			pending = append(pending, e)
+			if len(pending) >= batch {
+				return flush()
 			}
 			return nil
 		})
-		stmt.Close()
-		if err != nil {
-			tx.Rollback()
-			return added, skipped, err
+		if err == nil {
+			err = flush()
 		}
-		if err := tx.Commit(); err != nil {
-			return added, skipped, fmt.Errorf("ajout à la file : %w", err)
+		if err != nil {
+			return added, skipped, err
 		}
 	}
 	m.poke()
 	m.changed()
 	return added, skipped, nil
+}
+
+// insertBatch ajoute un lot de fichiers distants, dans une seule transaction.
+// Un fichier déjà présent avec la même taille est marqué terminé sans
+// transfert, sans doublon si la file le connaît déjà.
+func (m *Manager) insertBatch(ctx context.Context, root *os.Root, peer Peer, folder string, entries []index.Entry) (int, error) {
+	tx, err := m.opt.Store.W.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("ajout à la file : %w", err)
+	}
+	defer tx.Rollback()
+	stmt, err := tx.PrepareContext(ctx, `INSERT OR IGNORE INTO queue
+		(peer_id, peer_name, remote_path, dest_path, size, mtime, etag, status, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return 0, fmt.Errorf("ajout à la file : %w", err)
+	}
+	defer stmt.Close()
+	now := nano(m.now())
+	added := 0
+	for _, e := range entries {
+		dest := folder + "/" + e.Path
+		status := Queued
+		if fi, err := root.Stat(dest); err == nil && fi.Mode().IsRegular() && fi.Size() == e.Size {
+			var known int
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM queue WHERE peer_id = ? AND remote_path = ?`, peer.ID, e.Path).Scan(&known); err != nil {
+				return added, fmt.Errorf("ajout de %s : %w", e.Path, err)
+			}
+			if known > 0 {
+				continue
+			}
+			status = Done
+		}
+		res, err := stmt.ExecContext(ctx, peer.ID, peer.Name, e.Path, dest, e.Size, e.MTimeNano,
+			etagOf(e.Size, e.MTimeNano), string(status), now, now)
+		if err != nil {
+			return added, fmt.Errorf("ajout de %s : %w", e.Path, err)
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			added++
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("ajout à la file : %w", err)
+	}
+	return added, nil
 }
 
 // etagOf reproduit l'ETag du serveur (peerapi.ETag) à partir de l'index.

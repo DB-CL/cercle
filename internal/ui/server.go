@@ -9,8 +9,6 @@ package ui
 
 import (
 	"context"
-	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,11 +32,15 @@ type Server struct {
 	Node     *node.Node
 	Password string // vide = pas d'authentification (avertissement au démarrage)
 	Logger   *slog.Logger
+
+	authState authState
 }
 
 // Handler renvoie le routeur de l'interface.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("POST /ui/api/login", s.login)
+	mux.HandleFunc("POST /ui/api/logout", s.logout)
 	mux.HandleFunc("GET /ui/api/status", s.status)
 	mux.HandleFunc("POST /ui/api/circle", s.createCircle)
 	mux.HandleFunc("POST /ui/api/join", s.join)
@@ -88,29 +90,6 @@ func (s *Server) csrf(next http.Handler) http.Handler {
 				writeError(w, http.StatusForbidden, "en-tête "+CSRFHeader+" manquant")
 				return
 			}
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-// auth applique l'authentification Basic si un mot de passe est défini.
-// /healthz reste ouvert pour le healthcheck du conteneur.
-func (s *Server) auth(next http.Handler) http.Handler {
-	if s.Password == "" {
-		return next
-	}
-	want := sha256.Sum256([]byte(s.Password))
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/healthz" {
-			next.ServeHTTP(w, r)
-			return
-		}
-		_, pass, ok := r.BasicAuth()
-		got := sha256.Sum256([]byte(pass))
-		if !ok || subtle.ConstantTimeCompare(got[:], want[:]) != 1 {
-			w.Header().Set("WWW-Authenticate", `Basic realm="Cercle", charset="UTF-8"`)
-			writeError(w, http.StatusUnauthorized, "mot de passe requis")
-			return
 		}
 		next.ServeHTTP(w, r)
 	})

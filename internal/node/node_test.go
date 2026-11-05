@@ -254,3 +254,75 @@ func TestDownloadBetweenMembers(t *testing.T) {
 		return err == nil && string(b) == "partage de alice"
 	})
 }
+
+// TestEnqueueWhileFicheChanges : régression d'un interblocage du 05/11/2026.
+// La mise en file gardait une transaction d'écriture ouverte pendant l'appel
+// réseau au pair ; une mise à jour de fiche simultanée, qui tient le verrou du
+// cercle et attend la connexion d'écriture, bloquait alors tout le nœud.
+func TestEnqueueWhileFicheChanges(t *testing.T) {
+	ctx := context.Background()
+	alice, bob := newTNode(t, "alice"), newTNode(t, "bob")
+	for i := range 3000 {
+		p := filepath.Join(alice.cfg.ShareDir, "lot", fmt.Sprintf("f%04d.txt", i))
+		if i == 0 {
+			_ = os.MkdirAll(filepath.Dir(p), 0o755)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := alice.n.CreateCircle(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := alice.n.Index().Scan(ctx); err != nil {
+		t.Fatal(err)
+	}
+	code, _, _ := alice.n.Invite(ctx)
+	if err := bob.n.Join(ctx, code); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, 10*time.Second, "liaison", func() bool { _, err := info(bob, alice.self()); return err == nil })
+
+	stop := make(chan struct{})
+	churn := make(chan struct{})
+	go func() { // modifie sans arrêt la fiche de bob
+		defer close(churn)
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_, _ = bob.n.Membership().UpdateSelf(ctx, func(b *membership.Body) {
+				b.Announced = []string{fmt.Sprintf("127.0.0.1:%d", 40000+i%1000)}
+			})
+		}
+	}()
+	done := make(chan error, 1)
+	go func() {
+		for range 5 {
+			if _, _, err := bob.n.Queue().Enqueue(ctx, alice.id(), []string{"lot"}); err != nil {
+				done <- err
+				return
+			}
+		}
+		done <- nil
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(60 * time.Second):
+		t.Fatal("interblocage : la mise en file ne se termine pas pendant les mises à jour de fiche")
+	}
+	close(stop)
+	<-churn
+	sum, err := bob.n.Queue().Summarize(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := sum.Count["queued"] + sum.Count["active"] + sum.Count["done"] + sum.Count["waiting"]; n != 3000 {
+		t.Errorf("%d éléments en file, attendu 3000 (sans doublon)", n)
+	}
+}

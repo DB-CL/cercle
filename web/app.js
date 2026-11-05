@@ -31,6 +31,12 @@ async function api(method, path, body) {
   const r = await fetch("/ui/api" + path, opts);
   if (r.status === 204 || r.status === 202) return null;
   const data = await r.json().catch(() => ({}));
+  if (r.status === 401 && data.login && path !== "/login") {
+    showLogin();
+    const e = new Error("Connexion requise.");
+    e.login = true;
+    throw e;
+  }
   if (!r.ok) {
     const e = new Error(data.error || "Erreur " + r.status);
     e.status = r.status;
@@ -146,10 +152,73 @@ async function loadStatus() {
   const st = state.status;
   document.getElementById("nav").hidden = !st.in_circle;
   document.getElementById("whoami").textContent = st.self ? st.self.display_name + " · " + st.self.tunnel_ip : "";
+  document.getElementById("logout").hidden = !st.password_set;
   const banner = document.getElementById("banner");
   banner.hidden = st.password_set;
   banner.textContent = st.password_set ? "" : "L'interface n'est pas protégée : définissez UI_PASSWORD si d'autres personnes utilisent votre réseau local.";
 }
+
+// ---------- Connexion ----------
+
+function showLogin() {
+  if (document.body.classList.contains("login-mode")) return;
+  state.es?.close();
+  state.es = null;
+  document.body.classList.add("login-mode");
+  const pw = h("input", { type: "password", id: "pw", name: "password", autocomplete: "current-password", required: true, "aria-label": "Mot de passe", placeholder: "Mot de passe" });
+  const toggle = h("button", {
+    type: "button",
+    onclick: () => {
+      const show = pw.type === "password";
+      pw.type = show ? "text" : "password";
+      toggle.textContent = show ? "Masquer" : "Afficher";
+      pw.focus();
+    },
+  }, "Afficher");
+  const remember = h("input", { type: "checkbox", checked: true });
+  const err = h("p", { class: "err", role: "alert" });
+  const go = h("button", { class: "primary", type: "submit" }, "Se connecter");
+  const card = h("div", { class: "login" },
+    h("div", { class: "orbit", "aria-hidden": "true" }, h("span", { class: "sat" }), h("span", { class: "sat" }), h("span", { class: "sat" })),
+    h("h1", {}, "Cercle"),
+    h("p", { class: "tagline" }, "Le partage privé entre amis"),
+    h("form", {
+      onsubmit: async (ev) => {
+        ev.preventDefault();
+        err.textContent = "";
+        go.disabled = true;
+        go.textContent = "Connexion…";
+        try {
+          await api("POST", "/login", { password: pw.value, remember: remember.checked });
+          document.body.classList.remove("login-mode");
+          await boot();
+        } catch (e) {
+          err.textContent = e.message;
+          card.classList.remove("shake");
+          void card.offsetWidth; // relance l'animation
+          card.classList.add("shake");
+          pw.select();
+        } finally {
+          go.disabled = false;
+          go.textContent = "Se connecter";
+        }
+      },
+    },
+      // Nom d'utilisateur invisible : aide les gestionnaires de mots de passe à enregistrer l'accès.
+      h("input", { type: "text", name: "username", autocomplete: "username", value: "cercle", hidden: true }),
+      h("div", { class: "pw" }, pw, toggle),
+      h("label", { class: "remember" }, remember, "Rester connecté sur cet appareil"),
+      go,
+      err),
+    h("p", { class: "foot" }, "Le mot de passe est celui défini sur le NAS (UI_PASSWORD)."));
+  setView(card);
+  setTimeout(() => pw.focus(), 50);
+}
+
+document.getElementById("logout").addEventListener("click", async () => {
+  await api("POST", "/logout").catch(() => {});
+  showLogin();
+});
 
 // ---------- Accueil (hors cercle) ----------
 
@@ -632,7 +701,9 @@ function debounce(fn, ms) {
 }
 
 function connectEvents() {
+  state.es?.close();
   const es = new EventSource("/ui/api/events");
+  state.es = es;
   es.addEventListener("progress", (ev) => applyProgress(JSON.parse(ev.data)));
   es.addEventListener("queue", () => {
     if (state.view === "telechargements" && state.refreshQueue) state.refreshQueue();
@@ -646,15 +717,18 @@ function connectEvents() {
 
 // ---------- Démarrage ----------
 
-window.addEventListener("hashchange", () => render().catch((e) => toast(e.message, true)));
+window.addEventListener("hashchange", () => render().catch((e) => { if (!e.login) toast(e.message, true); }));
 
-(async () => {
+async function boot() {
   try {
     await loadStatus();
     await render();
     if (state.status.in_circle) api("GET", "/queue?limit=1").then((d) => updateNavCount(d.summary)).catch(() => {});
     connectEvents();
   } catch (e) {
+    if (e.login) return; // la page de connexion est affichée
     setView(h("div", { class: "card" }, h("h3", {}, "Interface indisponible"), h("p", { class: "err" }, e.message)));
   }
-})();
+}
+
+boot();

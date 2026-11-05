@@ -83,7 +83,7 @@ Tous se règlent par variables d'environnement. Ceux de la page Réglages (nom, 
 | `WG_PUBLIC_ENDPOINTS` | vide | Adresses où vous joindre, séparées par des virgules |
 | `TUNNEL_SUBNET` | `10.42.0.0/24` | Sous-réseau du cercle, choisi à sa création |
 | `UI_LISTEN` | `:8080` | Adresse de l'interface |
-| `UI_PASSWORD` | vide | Mot de passe de l'interface (fortement conseillé) |
+| `UI_PASSWORD` | vide | Mot de passe de la page de connexion (fortement conseillé) |
 | `UPLOAD_LIMIT` | `0` | Débit d'envoi maximal, au total ; suffixes K, M, G en puissances de 1024 (`20M` = 20 Mio/s), `0` = illimité |
 | `MAX_UPLOADS` | `3` | Envois simultanés ; au-delà, les autres patientent |
 | `UPLOAD_WINDOW` | vide | Créneau d'envoi quotidien, par exemple `01:00-07:00` |
@@ -127,6 +127,7 @@ L'image `ghcr.io/db-cl/cercle:1` suit les versions 1.x. La file de téléchargem
 - Rien n'est exposé sur Internet à part le port UDP de WireGuard. L'API entre nœuds n'écoute que dans le tunnel.
 - Chaque nœud signe sa propre fiche (Ed25519) : personne ne peut se faire passer pour un autre membre, ni entrer sans invitation.
 - Un membre ne voit que le dossier `/share` des autres, en lecture seule. Les chemins sont confinés à l'envoi comme à la réception.
+- L'interface demande le mot de passe `UI_PASSWORD` dans sa propre page de connexion, puis garde une session (cookie signé, `HttpOnly`, `SameSite=Strict`, `Secure` en HTTPS) de 12 h, ou de 30 jours avec « Rester connecté ». Les essais ratés sont limités à un par seconde. Changer le mot de passe déconnecte toutes les sessions.
 - Le conteneur tourne sans privilège, en utilisateur non root, avec un système de fichiers en lecture seule.
 
 ## Développement
@@ -147,7 +148,7 @@ CGO_ENABLED=0 deploy/go.sh build -o /src/.bin/cercle ./cmd/cercle
 
 ### Essai à trois nœuds
 
-L'interface est sur `http://127.0.0.1:18081/` (puis 18082, 18083), mot de passe `secret`. Elle se pilote aussi par son API JSON ; toute requête qui modifie quelque chose doit porter l'en-tête `X-Cercle-UI` (protection CSRF).
+L'interface est sur `http://127.0.0.1:18081/` (puis 18082, 18083), mot de passe `secret` ; `curl` peut s'authentifier en Basic (`-u x:secret`). Elle se pilote aussi par son API JSON ; toute requête qui modifie quelque chose doit porter l'en-tête `X-Cercle-UI` (protection CSRF).
 
 ```sh
 for i in 1 2 3; do
@@ -235,7 +236,7 @@ Ce qui marche :
 - **Téléchargements** : filtres par état avec compteurs ; progression, débit et temps restant en direct ; erreurs et prochain essai ; actions par élément ou sur une sélection ; vidage des terminés.
 - **Réglages** : nom, débits, nombre de transferts et créneaux, appliqués à chaud, avec les erreurs affichées champ par champ. État du partage avec relance du scan. État réseau (adresse, port, endpoints annoncés, clé publique, cercle).
 - API complète sous `/ui/api` : celle du PRD, plus `GET /share` et `POST /queue/actions` pour les actions groupées. Flux d'événements `GET /ui/api/events` : changements regroupés, et progression chaque seconde pendant un transfert.
-- Sécurité : `UI_PASSWORD` (authentification Basic), avec un bandeau d'avertissement s'il manque. En-tête `X-Cercle-UI` obligatoire pour toute modification (CSRF). CSP `default-src 'self'`. Aucun texte venu d'un pair n'est inséré comme HTML.
+- Sécurité : page de connexion par mot de passe (`UI_PASSWORD`) et session signée, avec un bandeau d'avertissement si aucun mot de passe n'est défini. L'authentification Basic reste acceptée pour les scripts, sans jamais déclencher la fenêtre du navigateur. En-tête `X-Cercle-UI` obligatoire pour toute modification (CSRF). CSP `default-src 'self'`. Aucun texte venu d'un pair n'est inséré comme HTML.
 
 Vérifications : tests Go de l'API (parcours complet entre deux nœuds, mot de passe, CSRF, flux d'événements). Chaque vue contrôlée à l'œil dans Chromium sans écran, en clair et en sombre, sur ordinateur et sur mobile, sans erreur JavaScript.
 

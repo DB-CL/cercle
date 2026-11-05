@@ -26,6 +26,7 @@ type tnode struct {
 	n   *node.Node
 	srv *httptest.Server
 	cfg config.Config
+	ui  *Server
 }
 
 func freeUDPPort(t *testing.T) int {
@@ -60,14 +61,16 @@ func start(t *testing.T, name, password string, files map[string]string) *tnode 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- n.Run(ctx) }()
-	srv := httptest.NewServer((&Server{Node: n, Password: password}).Handler())
+	ui := &Server{Node: n, Password: password}
+	ui.authState.failWait = 20 * time.Millisecond
+	srv := httptest.NewServer(ui.Handler())
 	t.Cleanup(func() {
 		srv.Close()
 		cancel()
 		<-done
 		n.Close()
 	})
-	return &tnode{t: t, n: n, srv: srv, cfg: cfg}
+	return &tnode{t: t, n: n, srv: srv, cfg: cfg, ui: ui}
 }
 
 // call fait une requête à l'API de l'interface ; out reçoit le JSON.
@@ -116,10 +119,9 @@ func TestStaticAndSecurity(t *testing.T) {
 		}
 		return resp
 	}
-	if r := get("/", false); r.StatusCode != 401 || r.Header.Get("WWW-Authenticate") == "" {
-		t.Errorf("sans mot de passe : %d", r.StatusCode)
-	}
-	r := get("/", true)
+	// La page et ses fichiers sont publics (aucun secret) ; l'API ne l'est pas,
+	// et ne déclenche jamais la fenêtre Basic du navigateur.
+	r := get("/", false)
 	b, _ := io.ReadAll(r.Body)
 	r.Body.Close()
 	if r.StatusCode != 200 || !strings.Contains(string(b), "<title>Cercle</title>") {
@@ -128,8 +130,18 @@ func TestStaticAndSecurity(t *testing.T) {
 	if csp := r.Header.Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'self'") {
 		t.Errorf("CSP absente : %q", csp)
 	}
+	r = get("/ui/api/status", false)
+	var body map[string]any
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	r.Body.Close()
+	if r.StatusCode != 401 || r.Header.Get("WWW-Authenticate") != "" || body["login"] != true {
+		t.Errorf("API sans connexion : %d, WWW-Authenticate %q, %v", r.StatusCode, r.Header.Get("WWW-Authenticate"), body)
+	}
+	if r := get("/ui/api/status", true); r.StatusCode != 200 {
+		t.Errorf("API en Basic (scripts) : %d", r.StatusCode)
+	}
 	for _, f := range []string{"/app.js", "/style.css"} {
-		if r := get(f, true); r.StatusCode != 200 {
+		if r := get(f, false); r.StatusCode != 200 {
 			t.Errorf("%s : %d", f, r.StatusCode)
 		}
 	}
@@ -147,6 +159,86 @@ func TestStaticAndSecurity(t *testing.T) {
 	}
 	if a.n.Membership().InCircle() {
 		t.Fatal("cercle créé malgré le refus")
+	}
+}
+
+func TestLoginSession(t *testing.T) {
+	a := start(t, "alice", "secret", nil)
+	post := func(path string, body any, cookies ...*http.Cookie) *http.Response {
+		b, _ := json.Marshal(body)
+		req, _ := http.NewRequest(http.MethodPost, a.srv.URL+path, bytes.NewReader(b))
+		req.Header.Set(CSRFHeader, "1")
+		for _, c := range cookies {
+			req.AddCookie(c)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp
+	}
+	status := func(c *http.Cookie) int {
+		req, _ := http.NewRequest(http.MethodGet, a.srv.URL+"/ui/api/status", nil)
+		if c != nil {
+			req.AddCookie(c)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	if r := post("/ui/api/login", map[string]any{"password": "faux"}); r.StatusCode != 401 || len(r.Cookies()) != 0 {
+		t.Fatalf("mauvais mot de passe : %d, %d cookies", r.StatusCode, len(r.Cookies()))
+	}
+	r := post("/ui/api/login", map[string]any{"password": "secret", "remember": true})
+	if r.StatusCode != 204 || len(r.Cookies()) != 1 {
+		t.Fatalf("connexion : %d", r.StatusCode)
+	}
+	c := r.Cookies()[0]
+	if !c.HttpOnly || c.SameSite != http.SameSiteStrictMode || c.MaxAge < 29*24*3600 {
+		t.Errorf("cookie : %+v", c)
+	}
+	if code := status(c); code != 200 {
+		t.Fatalf("avec le cookie : %d", code)
+	}
+	forged := *c
+	forged.Value = strings.Replace(c.Value, ".", "9.", 1) // expiration repoussée, signature inchangée
+	if code := status(&forged); code != 401 {
+		t.Errorf("cookie falsifié : %d", code)
+	}
+	expired := &http.Cookie{Name: sessionCookie, Value: a.ui.sign(time.Now().Add(-time.Minute).Unix())}
+	if code := status(expired); code != 401 {
+		t.Errorf("cookie expiré : %d", code)
+	}
+	// Session navigateur (sans « rester connecté ») : pas de Max-Age.
+	if r := post("/ui/api/login", map[string]any{"password": "secret"}); r.Cookies()[0].MaxAge != 0 {
+		t.Errorf("session courte persistante : %+v", r.Cookies()[0])
+	}
+	// Changement de mot de passe : les sessions existantes tombent.
+	other := &Server{Node: a.n, Password: "nouveau"}
+	srv2 := httptest.NewServer(other.Handler())
+	defer srv2.Close()
+	req, _ := http.NewRequest(http.MethodGet, srv2.URL+"/ui/api/status", nil)
+	req.AddCookie(c)
+	resp, _ := http.DefaultClient.Do(req)
+	resp.Body.Close()
+	if resp.StatusCode != 401 {
+		t.Errorf("cookie accepté après changement de mot de passe : %d", resp.StatusCode)
+	}
+	// Déconnexion : le cookie est effacé.
+	if r := post("/ui/api/logout", nil, c); len(r.Cookies()) != 1 || r.Cookies()[0].MaxAge >= 0 {
+		t.Errorf("déconnexion : %+v", r.Cookies())
+	}
+	// Connexion sans l'en-tête anti-CSRF : refusée.
+	b, _ := json.Marshal(map[string]string{"password": "secret"})
+	resp, _ = http.Post(a.srv.URL+"/ui/api/login", "application/json", bytes.NewReader(b))
+	resp.Body.Close()
+	if resp.StatusCode != 403 {
+		t.Errorf("connexion sans %s : %d", CSRFHeader, resp.StatusCode)
 	}
 }
 
