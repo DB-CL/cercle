@@ -10,10 +10,9 @@ import (
 	"time"
 )
 
-// Banc de débit du tunnel : deux nœuds complets dans le même processus, reliés
-// en UDP sur 127.0.0.1. Les deux bouts (chiffrement et netstack) consomment le
-// même processeur : le résultat est une borne basse du débit entre deux NAS de
-// cette puissance.
+// Tunnel throughput bench: two full nodes in one process, linked over UDP on
+// 127.0.0.1. Both ends (encryption and netstack) use the same CPU: the result
+// is a lower bound for two NAS boxes of that class.
 //
 //	deploy/go.sh test ./internal/wg -run '^$' -bench Tunnel -benchtime 5x
 //	CERCLE_BENCH_MB=2048 deploy/go.sh test ./internal/wg -run TestThroughput -v
@@ -27,10 +26,10 @@ func BenchmarkTunnel(b *testing.B) {
 	}
 }
 
-// TestThroughput affiche le débit en Mb/s. Ignoré avec -short.
+// TestThroughput prints the throughput in Mb/s. Skipped with -short.
 func TestThroughput(t *testing.T) {
 	if testing.Short() {
-		t.Skip("banc de débit ignoré avec -short")
+		t.Skip("throughput bench skipped with -short")
 	}
 	mb := 512
 	if v, err := strconv.Atoi(os.Getenv("CERCLE_BENCH_MB")); err == nil && v > 0 {
@@ -39,18 +38,18 @@ func TestThroughput(t *testing.T) {
 	size := int64(mb) << 20
 	for _, upstream := range []bool{false, true} {
 		a, c := benchPair(t, upstream)
-		transfer(t, a, c, 8<<20) // échauffement
+		transfer(t, a, c, 8<<20) // warm-up
 		start := time.Now()
 		transfer(t, a, c, size)
 		el := time.Since(start)
-		label := "netstack Cercle"
+		label := "Cercle netstack"
 		if upstream {
-			label = "netstack wireguard-go d'origine"
+			label = "upstream wireguard-go netstack"
 		}
-		t.Logf("%s : %d Mio en %v = %.0f Mb/s", label, mb, el.Round(time.Millisecond), float64(size*8)/el.Seconds()/1e6)
+		t.Logf("%s: %d MiB in %v = %.0f Mb/s", label, mb, el.Round(time.Millisecond), float64(size*8)/el.Seconds()/1e6)
 	}
 
-	// Référence : TCP du noyau sur la boucle locale, sans WireGuard.
+	// Reference: kernel TCP on loopback, without WireGuard.
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -64,7 +63,7 @@ func TestThroughput(t *testing.T) {
 	}
 	send(t, conn, size)
 	el := time.Since(start)
-	t.Logf("référence TCP noyau : %.0f Mb/s", float64(size*8)/el.Seconds()/1e6)
+	t.Logf("kernel TCP reference: %.0f Mb/s", float64(size*8)/el.Seconds()/1e6)
 }
 
 func benchPair(t testing.TB, upstream bool) (src, dst *node) {
@@ -80,7 +79,7 @@ func benchPair(t testing.TB, upstream bool) (src, dst *node) {
 	return src, dst
 }
 
-// sink lit tout ce qu'on lui envoie et renvoie un octet à la fin de chaque connexion.
+// sink reads everything it receives and closes each connection at the end.
 func sink(l net.Listener) {
 	for {
 		c, err := l.Accept()
@@ -105,7 +104,7 @@ func transfer(t testing.TB, src, dst *node, size int64) {
 	send(t, c, size)
 }
 
-// send écrit size octets puis attend que le pair ait tout lu (fermeture).
+// send writes size bytes then waits until the peer has read everything (close).
 func send(t testing.TB, c net.Conn, size int64) {
 	t.Helper()
 	buf := make([]byte, 256<<10)

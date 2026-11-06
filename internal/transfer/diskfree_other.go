@@ -2,5 +2,5 @@
 
 package transfer
 
-// diskFree n'est mesuré que sous Linux (cible des images) ; ailleurs, pas de garde.
+// diskFree is only measured on Linux (the image target); elsewhere there is no guard.
 func diskFree(string) (int64, bool) { return 0, false }

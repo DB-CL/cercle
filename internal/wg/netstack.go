@@ -1,13 +1,13 @@
 package wg
 
-// TUN userspace sur la pile TCP/IP gVisor, dérivé de
-// golang.zx2c4.com/wireguard/tun/netstack (licence MIT, WireGuard LLC).
+// User-space TUN on the gVisor TCP/IP stack, derived from
+// golang.zx2c4.com/wireguard/tun/netstack (MIT license, WireGuard LLC).
 //
-// Deux différences avec l'original, mesurées par le banc de débit :
-//   - lecture par lots : WireGuard reçoit jusqu'à batchSize paquets par appel
-//     et les envoie en un seul sendmmsg, au lieu d'un appel système par paquet ;
-//   - TCP réglé pour le débit : buffers auto-ajustés jusqu'à 8 Mio, CUBIC.
-// Le résolveur DNS de l'original est retiré : Cercle ne joint que des IP.
+// Two differences from the original, measured with the throughput bench:
+//   - batched reads: WireGuard gets up to batchSize packets per call and sends
+//     them with a single sendmmsg, instead of one system call per packet;
+//   - TCP tuned for throughput: auto-tuned buffers up to 8 MiB, CUBIC.
+// The original's DNS resolver is removed: Cercle only dials IP addresses.
 
 import (
 	"context"
@@ -39,7 +39,7 @@ const (
 	tcpBufMax   = 8 << 20
 )
 
-// netTUN relie WireGuard (côté tun.Device) à la pile gVisor (côté stack.Stack).
+// netTUN links WireGuard (tun.Device side) to the gVisor stack (stack.Stack side).
 type netTUN struct {
 	ep       *channel.Endpoint
 	stack    *stack.Stack
@@ -74,22 +74,22 @@ func newNetTUN(addr netip.Addr, mtu int) (*netTUN, error) {
 	cc := tcpip.CongestionControlOption("cubic")
 	for _, opt := range []tcpip.SettableTransportProtocolOption{&sack, &moderate, &rcv, &snd, &cc} {
 		if err := s.SetTransportProtocolOption(tcp.ProtocolNumber, opt); err != nil {
-			return nil, fmt.Errorf("option TCP %T : %v", opt, err)
+			return nil, fmt.Errorf("TCP option %T: %v", opt, err)
 		}
 	}
 	t.notify = t.ep.AddNotify(t)
 	if err := s.CreateNIC(1, t.ep); err != nil {
-		return nil, fmt.Errorf("création de la NIC : %v", err)
+		return nil, fmt.Errorf("creating the NIC: %v", err)
 	}
 	proto := tcpip.ProtocolAddress{
 		Protocol:          ipv4.ProtocolNumber,
 		AddressWithPrefix: tcpip.AddrFromSlice(addr.AsSlice()).WithPrefix(),
 	}
 	if !addr.Is4() {
-		return nil, errors.New("adresse de tunnel IPv4 attendue")
+		return nil, errors.New("expected an IPv4 tunnel address")
 	}
 	if err := s.AddProtocolAddress(1, proto, stack.AddressProperties{}); err != nil {
-		return nil, fmt.Errorf("ajout de l'adresse %v : %v", addr, err)
+		return nil, fmt.Errorf("adding address %v: %v", addr, err)
 	}
 	s.AddRoute(tcpip.Route{Destination: header.IPv4EmptySubnet, NIC: 1})
 	t.events <- tun.EventUp
@@ -102,7 +102,7 @@ func (t *netTUN) Events() <-chan tun.Event { return t.events }
 func (t *netTUN) MTU() (int, error)        { return t.mtu, nil }
 func (t *netTUN) BatchSize() int           { return batchSize }
 
-// Read attend un paquet sortant de la pile, puis prend ceux déjà en attente.
+// Read waits for a packet leaving the stack, then takes those already pending.
 func (t *netTUN) Read(bufs [][]byte, sizes []int, offset int) (int, error) {
 	var v *buffer.View
 	select {
@@ -130,7 +130,7 @@ func (t *netTUN) Read(bufs [][]byte, sizes []int, offset int) (int, error) {
 	}
 }
 
-// Write injecte dans la pile les paquets déchiffrés par WireGuard.
+// Write injects the packets decrypted by WireGuard into the stack.
 func (t *netTUN) Write(bufs [][]byte, offset int) (int, error) {
 	for _, b := range bufs {
 		pkt := b[offset:]
@@ -152,7 +152,7 @@ func (t *netTUN) Write(bufs [][]byte, offset int) (int, error) {
 	return len(bufs), nil
 }
 
-// WriteNotify est appelé par gVisor quand un paquet sort de la pile.
+// WriteNotify is called by gVisor when a packet leaves the stack.
 func (t *netTUN) WriteNotify() {
 	pkt := t.ep.Read()
 	if pkt == nil {
@@ -185,7 +185,7 @@ func (t *netTUN) listenTCP(port uint16) (net.Listener, error) {
 
 func (t *netTUN) dialTCP(ctx context.Context, to netip.AddrPort) (net.Conn, error) {
 	if !to.Addr().Is4() {
-		return nil, fmt.Errorf("adresse de tunnel IPv4 attendue : %v", to)
+		return nil, fmt.Errorf("expected an IPv4 tunnel address: %v", to)
 	}
 	return gonet.DialContextTCP(ctx, t.stack, tcpip.FullAddress{NIC: 1, Addr: tcpip.AddrFromSlice(to.Addr().AsSlice()), Port: to.Port()}, ipv4.ProtocolNumber)
 }

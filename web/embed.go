@@ -1,10 +1,10 @@
-// Package web embarque la page de l'interface : HTML, CSS et JavaScript sans
-// framework, sans étape de build, sans CDN.
+// Package web embeds the interface page: HTML, CSS and JavaScript with no
+// framework, no build step and no CDN.
 package web
 
 import "embed"
 
-// FS contient index.html, app.js et style.css.
+// FS holds index.html, app.js and style.css.
 //
 //go:embed index.html app.js style.css
 var FS embed.FS

@@ -1,9 +1,9 @@
-// Commande cercle : partage privé de fichiers entre NAS sur WireGuard.
+// Command cercle: private file sharing between NAS over WireGuard.
 //
-//	cercle serve        démarre le nœud (par défaut)
-//	cercle healthcheck  interroge l'interface locale (HEALTHCHECK de l'image, sans curl)
-//	cercle pubkey       affiche la clé publique du nœud (la crée au besoin)
-//	cercle version      affiche la version
+//	cercle serve        starts the node (default)
+//	cercle healthcheck  queries the local interface (image HEALTHCHECK, no curl)
+//	cercle pubkey       prints the node's public key (creating it if needed)
+//	cercle version      prints the version
 package main
 
 import (
@@ -18,7 +18,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
-	_ "time/tzdata" // l'image scratch n'a pas de zoneinfo
+	_ "time/tzdata" // the scratch image has no zoneinfo
 
 	"github.com/DB-CL/cercle/internal/buildinfo"
 	"github.com/DB-CL/cercle/internal/config"
@@ -43,15 +43,15 @@ func main() {
 	case "version":
 		fmt.Println(buildinfo.String())
 	default:
-		err = fmt.Errorf("sous-commande inconnue %q (serve, healthcheck, pubkey, version)", cmd)
+		err = fmt.Errorf("unknown subcommand %q (serve, healthcheck, pubkey, version)", cmd)
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "cercle :", err)
+		fmt.Fprintln(os.Stderr, "cercle:", err)
 		os.Exit(1)
 	}
 }
 
-// healthcheck interroge GET /healthz de l'interface locale : 0 si elle répond.
+// healthcheck queries GET /healthz on the local interface: 0 if it answers.
 func healthcheck() error {
 	cfg, err := config.Load(os.Getenv)
 	if err != nil {
@@ -59,7 +59,7 @@ func healthcheck() error {
 	}
 	host, port, err := net.SplitHostPort(cfg.UIListen)
 	if err != nil {
-		return fmt.Errorf("UI_LISTEN illisible : %w", err)
+		return fmt.Errorf("unreadable UI_LISTEN: %w", err)
 	}
 	if host == "" || host == "0.0.0.0" || host == "::" {
 		host = "127.0.0.1"
@@ -71,7 +71,7 @@ func healthcheck() error {
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("interface : %s", resp.Status)
+		return fmt.Errorf("interface: %s", resp.Status)
 	}
 	return nil
 }
@@ -105,7 +105,7 @@ func serve() error {
 		return err
 	}
 	defer n.Close()
-	log.Info("démarrage", "version", buildinfo.String(), "node", n.Config().NodeName, "public_key", n.PublicKey().String(), "ui", cfg.UIListen)
+	log.Info("starting", "version", buildinfo.String(), "node", n.Config().NodeName, "public_key", n.PublicKey().String(), "ui", cfg.UIListen)
 	password := cfg.UIPassword
 	if password == "" {
 		pwFile := filepath.Join(cfg.DataDir, "ui.password")
@@ -114,9 +114,9 @@ func serve() error {
 			return err
 		}
 		if created {
-			log.Warn("UI_PASSWORD absent : mot de passe aléatoire créé, à lire dans le fichier ui.password du volume /data", "file", pwFile)
+			log.Warn("UI_PASSWORD not set: random password created, read it in the ui.password file of the /data volume", "file", pwFile)
 		} else {
-			log.Info("UI_PASSWORD absent : mot de passe lu dans le fichier ui.password du volume /data", "file", pwFile)
+			log.Info("UI_PASSWORD not set: password read from the ui.password file of the /data volume", "file", pwFile)
 		}
 	}
 
@@ -127,11 +127,11 @@ func serve() error {
 	uiSrv := &ui.Server{Node: n, Password: password, Logger: log.With("module", "ui")}
 	wgr.Go(func() {
 		if err := uiSrv.Serve(ctx, cfg.UIListen); err != nil {
-			log.Error("interface arrêtée", "err", err)
+			log.Error("interface stopped", "err", err)
 			cancel()
 		}
 	})
 	err = n.Run(ctx)
-	log.Info("arrêt")
+	log.Info("stopping")
 	return err
 }

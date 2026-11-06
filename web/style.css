@@ -1,6 +1,6 @@
-/* Cercle : style « terminal ». Une seule police à chasse fixe (celle du
-   système), toute la largeur, coins carrés, filets fins, listes denses.
-   Sombre ambré par défaut ; clair façon papier listing. */
+/* Cercle: "terminal" style. A single monospace font (the system one), full
+   width, square corners, thin rules, dense lists. Amber on dark by default;
+   light mode looks like printer listing paper. */
 
 :root {
   --bg: #0d0d0b;
@@ -10,7 +10,7 @@
   --dim: #8b8571;
   --faint: #4d493c;
   --line: #2e2b22;
-  --accent: #ffb000;       /* ambre phosphore */
+  --accent: #ffb000;       /* amber phosphor */
   --accent-ink: #0d0d0b;
   --ok: #7bc96f;
   --warn: #e8c547;
@@ -55,7 +55,7 @@ a:hover { text-decoration: underline; }
 
 .wrap { padding: 14px 20px 64px; }
 
-/* ---------- Barre du haut ---------- */
+/* ---------- Top bar ---------- */
 .top { position: sticky; top: 0; z-index: 5; background: var(--bg-2); border-bottom: 1px solid var(--line); }
 .top-inner { display: flex; align-items: stretch; gap: 0; min-height: 34px; padding: 0 20px; flex-wrap: wrap; }
 .brand { color: var(--accent); font-weight: 700; letter-spacing: .2em; text-transform: uppercase; display: flex; align-items: center; padding-right: 22px; }
@@ -76,7 +76,7 @@ a:hover { text-decoration: underline; }
 .banner { background: var(--bad); color: var(--accent-ink); padding: 3px 20px; font-weight: 700; }
 .banner::before { content: "!! "; }
 
-/* ---------- Barre d'état du bas ---------- */
+/* ---------- Bottom status bar ---------- */
 .statusbar {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 6;
   display: flex; gap: 0; flex-wrap: wrap; align-items: stretch;
@@ -90,7 +90,7 @@ a:hover { text-decoration: underline; }
 .statusbar .rate b { color: var(--accent); }
 .statusbar .keys { color: var(--faint); }
 
-/* ---------- Titres et textes ---------- */
+/* ---------- Headings and text ---------- */
 h1, h2, h3 { font-size: 14px; font-weight: 700; text-transform: uppercase; letter-spacing: .12em; margin: 0; }
 h1 { color: var(--accent); }
 h3 { color: var(--text); margin-bottom: 8px; }
@@ -102,7 +102,7 @@ h3 { color: var(--text); margin-bottom: 8px; }
 .mono { font-family: var(--mono); word-break: break-all; }
 p { margin: 6px 0; }
 
-/* ---------- Boutons : [ action ] ---------- */
+/* ---------- Buttons: [ action ] ---------- */
 button, .btn {
   font: inherit; color: var(--accent); background: transparent; border: none;
   padding: 1px 2px; cursor: pointer; white-space: nowrap; text-transform: lowercase;
@@ -121,7 +121,7 @@ button.link { color: var(--dim); }
 button.link:hover { background: none; color: var(--text); text-decoration: underline; }
 .actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
 
-/* ---------- Champs ---------- */
+/* ---------- Fields ---------- */
 input[type=text], input[type=password], input[type=number], textarea {
   font: inherit; width: 100%; color: var(--text); background: var(--bg);
   border: 1px solid var(--line); padding: 5px 8px; caret-color: var(--accent);
@@ -142,12 +142,12 @@ input[type=checkbox]::before { content: ""; width: 8px; height: 8px; background:
 input[type=checkbox]:checked { border-color: var(--accent); }
 input[type=checkbox]:checked::before { transform: scale(1); }
 
-/* ---------- Panneaux ---------- */
+/* ---------- Panels ---------- */
 .card { border: 1px solid var(--line); background: var(--bg); padding: 10px 14px; margin-bottom: 14px; }
 .card > h3:first-child { margin: -10px -14px 10px; padding: 4px 14px; background: var(--bg-2); border-bottom: 1px solid var(--line); color: var(--dim); font-size: 13px; }
 .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 0 14px; }
 
-/* ---------- Tables (membres, partage, file) ---------- */
+/* ---------- Tables (members, share, queue) ---------- */
 .list { border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .row, .mrow, .dl {
   display: grid; gap: 14px; align-items: center; padding: 3px 8px;
@@ -164,8 +164,8 @@ input[type=checkbox]:checked::before { transform: scale(1); }
 .empty { padding: 14px 8px; color: var(--dim); }
 .empty::before { content: "-- "; color: var(--faint); }
 
-/* Tables à colonnes alignées : la grille est portée par la liste, chaque
-   ligne en hérite (subgrid), donc toutes les colonnes tombent juste. */
+/* Tables with aligned columns: the list carries the grid and every row
+   inherits it (subgrid), so all columns line up. */
 .list.cols-m, .list.cols-d { display: grid; column-gap: 14px; }
 .list.cols-m > *, .list.cols-d > * { grid-column: 1 / -1; }
 .list.cols-m > .mrow, .list.cols-d > .dl { display: grid; grid-template-columns: subgrid; gap: 0; column-gap: 14px; }
@@ -173,7 +173,7 @@ input[type=checkbox]:checked::before { transform: scale(1); }
 .mrow > :first-child { white-space: nowrap; }
 .list.cols-d { grid-template-columns: 2ch minmax(24ch, 1fr) 22ch 5ch 16ch 26ch auto; }
 
-/* Membres */
+/* Members */
 .state-on { color: var(--ok); }
 .state-off { color: var(--faint); }
 .state-bad { color: var(--bad); }
@@ -186,7 +186,7 @@ input[type=checkbox]:checked::before { transform: scale(1); }
 details summary { cursor: pointer; color: var(--dim); padding: 4px 0; }
 .members-revoked .mrow { opacity: .6; }
 
-/* Partage */
+/* Share */
 .crumbs { display: flex; flex-wrap: wrap; gap: 0; align-items: center; margin: 4px 0 10px; color: var(--dim); }
 .crumbs a, .crumbs span.here { padding: 0 2px; }
 .crumbs .sep { color: var(--faint); padding: 0 4px; }
@@ -210,7 +210,7 @@ details summary { cursor: pointer; color: var(--dim); padding: 4px 0; }
 .selbar button:hover:not(:disabled) { background: var(--accent-ink); color: var(--accent); }
 .selbar button:hover:not(:disabled)::before, .selbar button:hover:not(:disabled)::after { color: var(--accent); }
 
-/* Téléchargements */
+/* Downloads */
 .filters { display: flex; gap: 4px 14px; flex-wrap: wrap; margin-bottom: 8px; }
 .filters button { color: var(--dim); }
 .filters button.on { background: var(--accent); color: var(--accent-ink); }
@@ -239,14 +239,14 @@ details summary { cursor: pointer; color: var(--dim); padding: 4px 0; }
 .dl .err { grid-column: 2 / -1; margin: -2px 0 2px; font-size: 13px; }
 .dl .err::before { content: "└ "; color: var(--faint); }
 
-/* Réglages */
+/* Settings */
 dl.kv { display: grid; grid-template-columns: 22ch 1fr; gap: 2px 14px; margin: 0 0 8px; }
 dl.kv dt { color: var(--dim); }
-dl.kv dt::after { content: " :"; color: var(--faint); }
+dl.kv dt::after { content: ":"; color: var(--faint); }
 dl.kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0 14px; }
 
-/* Réglages : dossiers partagés */
+/* Settings: shared folders */
 .share-all { display: flex; gap: 10px; align-items: center; color: var(--text); margin: 10px 0 6px; cursor: pointer; }
 .share-list { border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); margin-bottom: 6px; }
 .share-row {
@@ -259,18 +259,18 @@ dl.kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .share-row .nm { overflow-wrap: anywhere; }
 .share-row input:disabled { opacity: .55; cursor: default; }
 
-/* Membres : invitation */
+/* Members: invitation */
 .invite-code { margin: 8px 0; color: var(--accent); }
 .pending-row { display: grid; grid-template-columns: 1fr auto; gap: 14px; padding: 3px 0; border-top: 1px solid var(--bg-3); }
 .pending-row:first-of-type { border-top: none; }
 .meta { color: var(--dim); font-size: 13px; display: flex; flex-wrap: wrap; gap: 0 14px; }
 
-/* ---------- Accueil hors cercle ---------- */
+/* ---------- Welcome outside a circle ---------- */
 .hero { padding: 10px 0 14px; }
 .hero h1 { font-size: 14px; }
 .hero p { max-width: 80ch; color: var(--dim); }
 
-/* ---------- Connexion ---------- */
+/* ---------- Login ---------- */
 body.login-mode .top, body.login-mode .banner, body.login-mode .statusbar { display: none; }
 body.login-mode .wrap { min-height: 100vh; display: grid; place-items: center; padding: 20px 16px; }
 .login { width: min(64ch, 100%); border: 1px solid var(--line); background: var(--bg); }
@@ -287,7 +287,7 @@ body.login-mode .wrap { min-height: 100vh; display: grid; place-items: center; p
 .login .go { justify-self: start; margin-top: 4px; font-weight: 700; }
 .login .err { margin: 0; }
 .login .err:empty { display: none; }
-.login .err:not(:empty)::before { content: "erreur : "; color: var(--faint); }
+.login .err:not(:empty)::before { content: "error: "; color: var(--faint); }
 .login .foot { color: var(--faint); font-size: 12px; margin: 10px 0 0; border-top: 1px solid var(--bg-3); padding-top: 8px; }
 .cursor::after { content: "_"; color: var(--accent); animation: blink 1s steps(1) infinite; }
 @keyframes blink { 50% { opacity: 0; } }
@@ -302,7 +302,7 @@ body.login-mode .wrap { min-height: 100vh; display: grid; place-items: center; p
 .toast.bad { border-color: var(--bad); }
 .toast.bad::before { content: "!! "; color: var(--bad); }
 
-/* ---------- Petits écrans ---------- */
+/* ---------- Small screens ---------- */
 @media (max-width: 760px) {
   .wrap { padding: 10px 12px 64px; }
   .top-inner, .statusbar { padding: 0 12px; }
@@ -314,7 +314,7 @@ body.login-mode .wrap { min-height: 100vh; display: grid; place-items: center; p
   .row { grid-template-columns: 2ch minmax(0, 1fr) 9ch; }
   .row .date { display: none; }
   .list.cols-d > .dl.head, .list.cols-m > .mrow.head { display: none; }
-  /* Une ligne de la file sur mobile : nom + %, barre, taille + état, actions. */
+  /* A queue row on mobile: name + %, bar, size + state, actions. */
   .list.cols-d { grid-template-columns: 2ch minmax(0, 1fr) auto; }
   .dl > :nth-child(1) { grid-column: 1; grid-row: 1; }
   .dl > :nth-child(2) { grid-column: 2; grid-row: 1; }

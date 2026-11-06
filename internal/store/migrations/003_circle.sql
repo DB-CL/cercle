@@ -1,12 +1,13 @@
--- J4 : cercle, membres, révocations, invitations.
+-- Circle, members, revocations, invitations.
 CREATE TABLE circle (
-    id         INTEGER PRIMARY KEY CHECK (id = 1), -- une seule ligne
+    id         INTEGER PRIMARY KEY CHECK (id = 1), -- a single row
     circle_id  TEXT NOT NULL,
     subnet     TEXT NOT NULL,
     created_at INTEGER NOT NULL
 ) STRICT;
 
--- Fiche signée de chaque membre, telle que reçue (JSON), plus les colonnes utiles aux requêtes.
+-- Each member's signed record, as received (JSON), plus columns useful for queries.
+-- (The record column was first named "fiche"; migration 004 renames it.)
 CREATE TABLE members (
     node_id    TEXT PRIMARY KEY,
     fiche      TEXT NOT NULL,
@@ -16,7 +17,7 @@ CREATE TABLE members (
     updated_at INTEGER NOT NULL
 ) STRICT;
 
--- Révocations signées : définitives, une par membre révoqué.
+-- Signed revocations: final, one per revoked member.
 CREATE TABLE revocations (
     target TEXT PRIMARY KEY,
     data   TEXT NOT NULL
@@ -26,12 +27,12 @@ CREATE TABLE invites (
     id          TEXT PRIMARY KEY,
     token_hash  BLOB NOT NULL,
     temp_pubkey TEXT NOT NULL,
-    temp_ip     TEXT NOT NULL,  -- adresse de la clé temporaire, le temps de l'adhésion
-    assigned_ip TEXT NOT NULL,  -- adresse définitive du nouveau membre
+    temp_ip     TEXT NOT NULL,  -- address of the temporary key while joining
+    assigned_ip TEXT NOT NULL,  -- final address of the new member
     created_at  INTEGER NOT NULL,
     expires_at  INTEGER NOT NULL,
     used_at     INTEGER NOT NULL DEFAULT 0,
     used_by     TEXT NOT NULL DEFAULT '',
-    response    TEXT NOT NULL DEFAULT '', -- réponse de /join, renvoyée telle quelle si le nouveau réessaie
+    response    TEXT NOT NULL DEFAULT '', -- /join response, replayed as is if the newcomer retries
     cancelled   INTEGER NOT NULL DEFAULT 0
 ) STRICT;

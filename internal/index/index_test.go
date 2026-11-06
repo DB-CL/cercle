@@ -22,12 +22,12 @@ func TestCleanPath(t *testing.T) {
 	for in, want := range ok {
 		got, err := CleanPath(in)
 		if err != nil || got != want {
-			t.Errorf("CleanPath(%q) = %q, %v ; attendu %q", in, got, err, want)
+			t.Errorf("CleanPath(%q) = %q, %v; want %q", in, got, err, want)
 		}
 	}
 	for _, in := range []string{"/etc/passwd", "../../etc/passwd", "films/../../x", "films/..", "..", "a\x00b"} {
 		if _, err := CleanPath(in); !errors.Is(err, ErrBadPath) {
-			t.Errorf("CleanPath(%q) : refus attendu, obtenu %v", in, err)
+			t.Errorf("CleanPath(%q): expected a refusal, got %v", in, err)
 		}
 	}
 }
@@ -71,14 +71,14 @@ func TestScanListTreeOpen(t *testing.T) {
 	write(t, share, "films/série/e02.mkv", 20)
 	write(t, share, "musique/z.flac", 5)
 	write(t, share, "lisez-moi.txt", 1)
-	// Exclus.
+	// Excluded.
 	write(t, share, ".cache/x", 1000)
 	write(t, share, "films/.secret", 1000)
 	write(t, share, "@eaDir/thumb.jpg", 1000)
 	write(t, share, "#recycle/old.mkv", 1000)
 	write(t, share, ".Trash-1000/old", 1000)
 	write(t, share, "films/brouillon.tmp", 1000)
-	// Liens : interne vers un fichier (gardé), sortant, vers un dossier (ignorés).
+	// Links: internal to a file (kept), escaping, to a folder (skipped).
 	write(t, base, "dehors/passwd", 1000)
 	must(t, os.Symlink("../films/A.mkv", filepath.Join(share, "musique/lien.mkv")))
 	must(t, os.Symlink(filepath.Join(base, "dehors/passwd"), filepath.Join(share, "fuite")))
@@ -90,7 +90,7 @@ func TestScanListTreeOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 	if st.Files != 7 || st.Dirs != 3 || st.Size != 236 {
-		t.Fatalf("scan = %+v ; attendu 7 fichiers, 3 dossiers, 236 octets", st)
+		t.Fatalf("scan = %+v; want 7 files, 3 folders, 236 bytes", st)
 	}
 
 	root, next, err := ix.List(ctx, "", "", 0)
@@ -98,20 +98,20 @@ func TestScanListTreeOpen(t *testing.T) {
 		t.Fatal(err, next)
 	}
 	if fmt.Sprint(names(root)) != "[films musique lisez-moi.txt]" {
-		t.Errorf("racine = %v", names(root))
+		t.Errorf("root = %v", names(root))
 	}
 	films, _, _ := ix.List(ctx, "films", "", 0)
 	if fmt.Sprint(names(films)) != "[série A.mkv b.mkv]" {
-		t.Errorf("films = %v (dossiers d'abord, puis nom sans casse)", names(films))
+		t.Errorf("films = %v (folders first, then case-insensitive name)", names(films))
 	}
 	if films[0].Size != 30 || films[0].FileCount != 2 {
-		t.Errorf("totaux de série = %+v", films[0])
+		t.Errorf("totals of série = %+v", films[0])
 	}
 	if size, n, last := ix.Totals(ctx); size != 236 || n != 7 || last == nil {
 		t.Errorf("Totals = %d, %d, %v", size, n, last)
 	}
 
-	// Pagination une entrée à la fois.
+	// Paging one entry at a time.
 	var paged []string
 	cur := ""
 	for {
@@ -137,20 +137,20 @@ func TestScanListTreeOpen(t *testing.T) {
 
 	f, info, err := ix.Open(ctx, "musique/lien.mkv")
 	if err != nil || info.Size() != 50 {
-		t.Fatalf("lien interne : %v", err)
+		t.Fatalf("internal link: %v", err)
 	}
 	f.Close()
 	for _, p := range []string{"fuite", "films/.secret", "films/brouillon.tmp", "boucle/A.mkv", "films", "absent"} {
 		if f, _, err := ix.Open(ctx, p); err == nil {
 			f.Close()
-			t.Errorf("Open(%q) aurait dû échouer", p)
+			t.Errorf("Open(%q) should have failed", p)
 		}
 	}
 	if _, _, err := ix.List(ctx, "lisez-moi.txt", "", 0); !errors.Is(err, ErrNotFound) {
-		t.Errorf("List d'un fichier : %v", err)
+		t.Errorf("List of a file: %v", err)
 	}
 
-	// Rescan : modification, suppression, ajout.
+	// Rescan: change, deletion, addition.
 	write(t, share, "films/b.mkv", 300)
 	must(t, os.RemoveAll(filepath.Join(share, "films/série")))
 	write(t, share, "musique/nouveau.flac", 7)
@@ -158,13 +158,13 @@ func TestScanListTreeOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 	if e, err := ix.Lookup(ctx, "films/b.mkv"); err != nil || e.Size != 300 {
-		t.Errorf("modification non vue : %+v, %v", e, err)
+		t.Errorf("change not seen: %+v, %v", e, err)
 	}
 	if _, err := ix.Lookup(ctx, "films/série/e01.mkv"); !errors.Is(err, ErrNotFound) {
-		t.Errorf("suppression non vue : %v", err)
+		t.Errorf("deletion not seen: %v", err)
 	}
 	if size, n, _ := ix.Totals(ctx); n != 6 || size != 50+300+5+1+7+50 {
-		t.Errorf("totaux après rescan = %d octets, %d fichiers", size, n)
+		t.Errorf("totals after rescan = %d bytes, %d files", size, n)
 	}
 }
 
@@ -175,11 +175,11 @@ func must(t testing.TB, err error) {
 	}
 }
 
-// TestScanScale vérifie la mémoire et la vitesse sur un gros partage.
-// CERCLE_SCAN_FILES=500000 pour la cible du PRD (long : création des fichiers).
+// TestScanScale checks memory and speed on a large share.
+// CERCLE_SCAN_FILES=500000 for the 500,000-file target (slow: creating the files).
 func TestScanScale(t *testing.T) {
 	if testing.Short() {
-		t.Skip("ignoré avec -short")
+		t.Skip("skipped with -short")
 	}
 	n := 20000
 	if v, err := strconv.Atoi(os.Getenv("CERCLE_SCAN_FILES")); err == nil && v > 0 {
@@ -225,7 +225,7 @@ func TestScanScale(t *testing.T) {
 		t.Fatal(err)
 	}
 	if st.Files != int64(n) {
-		t.Fatalf("%d fichiers indexés sur %d", st.Files, n)
+		t.Fatalf("%d files indexed out of %d", st.Files, n)
 	}
 	start := time.Now()
 	page, _, err := ix.List(ctx, "d042/s007", "", 0)
@@ -237,13 +237,13 @@ func TestScanScale(t *testing.T) {
 	_, err = ix.Scan(ctx)
 	rescan := time.Since(start)
 	must(t, err)
-	t.Logf("%d fichiers : scan %v, rescan %v, mémoire max %d Mio, liste d'un dossier %v",
+	t.Logf("%d files: scan %v, rescan %v, peak memory %d MiB, folder listing %v",
 		n, st.Duration.Round(time.Millisecond), rescan.Round(time.Millisecond), peak>>20, listDur)
 	if peak > 200<<20 {
-		t.Errorf("mémoire max %d Mio > 200 Mio", peak>>20)
+		t.Errorf("peak memory %d MiB > 200 MiB", peak>>20)
 	}
 	if listDur > 200*time.Millisecond {
-		t.Errorf("liste d'un dossier en %v > 200 ms", listDur)
+		t.Errorf("folder listing took %v > 200 ms", listDur)
 	}
 }
 
@@ -259,34 +259,34 @@ func TestSelection(t *testing.T) {
 
 	sel, err := ix.Selection(ctx)
 	if err != nil || !sel.All {
-		t.Fatalf("par défaut : %+v, %v ; tout partagé attendu", sel, err)
+		t.Fatalf("default: %+v, %v; expected everything shared", sel, err)
 	}
 	if _, err := ix.Scan(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if _, n, _ := ix.Totals(ctx); n != 4 {
-		t.Fatalf("tout partagé : %d fichiers, attendu 4", n)
+		t.Fatalf("everything shared: %d files, want 4", n)
 	}
 
 	must(t, ix.SetSelection(ctx, Selection{Folders: []string{"photos", "films", "films"}}))
-	// Retiré sur-le-champ, avant même le scan suivant.
+	// Removed right away, even before the next scan.
 	if f, _, err := ix.Open(ctx, "musique/b.flac"); err == nil {
 		f.Close()
-		t.Fatal("dossier décoché encore servi avant la réindexation")
+		t.Fatal("unticked folder still served before reindexing")
 	}
 	if _, err := ix.Scan(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if size, n, _ := ix.Totals(ctx); n != 2 || size != 40 {
-		t.Fatalf("films + photos : %d fichiers, %d octets", n, size)
+		t.Fatalf("films + photos: %d files, %d bytes", n, size)
 	}
 	if f, _, err := ix.Open(ctx, "musique/b.flac"); err == nil {
 		f.Close()
-		t.Fatal("un dossier décoché est encore servi")
+		t.Fatal("an unticked folder is still served")
 	}
 	if f, _, err := ix.Open(ctx, "lisez-moi.txt"); err == nil {
 		f.Close()
-		t.Fatal("un fichier du premier niveau non coché est servi")
+		t.Fatal("an unticked first-level file is served")
 	}
 	top, err := ix.TopLevel(ctx)
 	must(t, err)
@@ -295,19 +295,19 @@ func TestSelection(t *testing.T) {
 		got += fmt.Sprintf("%s:%v:%d ", e.Name, e.Shared, e.Files)
 	}
 	if got != "films:true:1 musique:false:0 photos:true:1 lisez-moi.txt:false:0 " {
-		t.Errorf("premier niveau = %q", got)
+		t.Errorf("first level = %q", got)
 	}
-	// Nouveau dossier monté : non partagé tant qu'il n'est pas coché.
+	// Newly mounted folder: not shared until ticked.
 	write(t, share, "series/d.mkv", 7)
 	if _, err := ix.Scan(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ix.Lookup(ctx, "series/d.mkv"); !errors.Is(err, ErrNotFound) {
-		t.Error("nouveau dossier partagé sans avoir été coché")
+		t.Error("new folder shared without being ticked")
 	}
 	for _, bad := range []string{"../etc", "a/b", "..", ""} {
 		if err := ix.SetSelection(ctx, Selection{Folders: []string{bad}}); err == nil {
-			t.Errorf("nom %q accepté", bad)
+			t.Errorf("name %q accepted", bad)
 		}
 	}
 	must(t, ix.SetSelection(ctx, Selection{All: true}))
@@ -315,6 +315,6 @@ func TestSelection(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, n, _ := ix.Totals(ctx); n != 5 {
-		t.Errorf("retour à « tout » : %d fichiers, attendu 5", n)
+		t.Errorf("back to everything: %d files, want 5", n)
 	}
 }

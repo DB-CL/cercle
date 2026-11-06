@@ -1,4 +1,4 @@
-# Test de bout en bout : 5 nœuds sur un réseau bridge Docker. Lancé par deploy/e2e.sh.
+# End-to-end test: 5 nodes on a Docker bridge network. Run by deploy/e2e.sh.
 x-node: &node
   image: ${CERCLE_IMAGE:-cercle:e2e}
   user: "${CERCLE_UID:-65532}:${CERCLE_GID:-65532}"

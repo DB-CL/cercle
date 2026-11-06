@@ -17,44 +17,42 @@ import (
 	"time"
 )
 
-// CodePrefix précède chaque code d'invitation.
+// CodePrefix precedes every invitation code.
 const CodePrefix = "cercle1:"
 
-// Erreurs d'invitation, avec des messages destinés à l'utilisateur.
+// Invitation errors, with messages meant for the user.
 var (
-	ErrInviteUnknown = errors.New("code d'invitation inconnu ou annulé")
-	ErrInviteUsed    = errors.New("ce code d'invitation a déjà servi")
-	ErrInviteExpired = errors.New("ce code d'invitation a expiré")
-	ErrBadCode       = errors.New("code d'invitation illisible : vérifiez qu'il a été collé en entier")
+	ErrInviteUnknown = errors.New("unknown or cancelled invitation code")
+	ErrInviteUsed    = errors.New("this invitation code has already been used")
+	ErrInviteExpired = errors.New("this invitation code has expired")
+	ErrBadCode       = errors.New("unreadable invitation code: check that it was pasted in full")
 )
 
-// Code est le contenu d'un code d'invitation.
-//
-// Écart au PRD : pas de clé de groupe (remplacée par les signatures Ed25519),
-// et une adresse temporaire pour la clé temporaire.
+// Code is the content of an invitation code. Its JSON field names are part of
+// the wire format.
 type Code struct {
-	Circle     string     `json:"c"`
-	Subnet     string     `json:"s"`
-	Assigned   netip.Addr `json:"a"`  // adresse définitive du nouveau membre
-	TempIP     netip.Addr `json:"ta"` // adresse de la clé temporaire
-	TempKey    string     `json:"tk"` // clé privée WireGuard temporaire, base64
-	Token      string     `json:"t"`
-	Inviter    string     `json:"i"`  // node_id (clé publique WireGuard) de l'invitant
-	InviterIP  netip.Addr `json:"ia"` // adresse de tunnel de l'invitant
-	Endpoints  []string   `json:"e"`  // endpoints où joindre l'invitant
-	ExpiresAt  int64      `json:"x"`
-	InviterNom string     `json:"n,omitempty"`
+	Circle      string     `json:"c"`
+	Subnet      string     `json:"s"`
+	Assigned    netip.Addr `json:"a"`  // final address of the new member
+	TempIP      netip.Addr `json:"ta"` // address of the temporary key
+	TempKey     string     `json:"tk"` // temporary WireGuard private key, base64
+	Token       string     `json:"t"`
+	Inviter     string     `json:"i"`  // inviter's node_id (WireGuard public key)
+	InviterIP   netip.Addr `json:"ia"` // inviter's tunnel address
+	Endpoints   []string   `json:"e"`  // endpoints where the inviter can be reached
+	ExpiresAt   int64      `json:"x"`
+	InviterName string     `json:"n,omitempty"`
 }
 
-// Encode sérialise le code : JSON compact, base64url, préfixe cercle1:.
+// Encode serializes the code: compact JSON, base64url, cercle1: prefix.
 func (c Code) Encode() string {
 	b, _ := json.Marshal(c)
 	return CodePrefix + base64.RawURLEncoding.EncodeToString(b)
 }
 
-// ParseCode lit un code collé par l'utilisateur.
+// ParseCode reads a code pasted by the user.
 func ParseCode(s string) (Code, error) {
-	s = strings.Join(strings.Fields(s), "") // espaces et retours à la ligne des messageries
+	s = strings.Join(strings.Fields(s), "") // spaces and line breaks added by messaging apps
 	rest, ok := strings.CutPrefix(s, CodePrefix)
 	if !ok {
 		return Code{}, ErrBadCode
@@ -70,7 +68,7 @@ func ParseCode(s string) (Code, error) {
 	return c, nil
 }
 
-// Invite est une invitation vue par son auteur.
+// Invite is an invitation as seen by its author.
 type Invite struct {
 	ID         string     `json:"id"`
 	TempPubKey string     `json:"-"`
@@ -82,7 +80,7 @@ type Invite struct {
 	UsedBy     string     `json:"used_by,omitempty"`
 }
 
-// Pending dit si l'invitation peut encore servir.
+// Pending reports whether the invitation can still be used.
 func (i Invite) Pending(now time.Time) bool { return i.UsedAt.IsZero() && now.Before(i.ExpiresAt) }
 
 func tokenHash(token string) []byte {
@@ -90,12 +88,12 @@ func tokenHash(token string) []byte {
 	return h[:]
 }
 
-// NewInvite crée une invitation. tempPriv et tempPub sont une paire de clés
-// WireGuard neuve (base64) ; endpoints, les adresses où le nouveau membre
-// pourra joindre ce nœud.
+// NewInvite creates an invitation. tempPriv and tempPub are a fresh WireGuard
+// key pair (base64); endpoints are the addresses where the new member will
+// reach this node.
 func (s *Service) NewInvite(ctx context.Context, ttl time.Duration, endpoints []string, tempPriv, tempPub string) (Code, Invite, error) {
 	if len(endpoints) == 0 {
-		return Code{}, Invite{}, errors.New("ce nœud n'annonce aucune adresse joignable (WG_PUBLIC_ENDPOINTS) : le nouveau membre ne pourrait pas le contacter")
+		return Code{}, Invite{}, errors.New("this node announces no reachable address (WG_PUBLIC_ENDPOINTS): the new member could not contact it")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -124,11 +122,11 @@ func (s *Service) NewInvite(ctx context.Context, ttl time.Duration, endpoints []
 	if _, err := s.st.W.ExecContext(ctx, `INSERT INTO invites (id, token_hash, temp_pubkey, temp_ip, assigned_ip, created_at, expires_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?)`, inv.ID, tokenHash(token), tempPub, tempIP.String(), assigned.String(),
 		now.UnixNano(), inv.ExpiresAt.UnixNano()); err != nil {
-		return Code{}, Invite{}, fmt.Errorf("enregistrement de l'invitation : %w", err)
+		return Code{}, Invite{}, fmt.Errorf("storing the invitation: %w", err)
 	}
 	code := Code{Circle: s.circle, Subnet: s.subnet.String(), Assigned: assigned, TempIP: tempIP, TempKey: tempPriv,
 		Token: token, Inviter: s.id.NodeID, InviterIP: self.body.TunnelIP, Endpoints: endpoints,
-		ExpiresAt: inv.ExpiresAt.UnixNano(), InviterNom: self.body.Name}
+		ExpiresAt: inv.ExpiresAt.UnixNano(), InviterName: self.body.Name}
 	return code, inv, nil
 }
 
@@ -150,29 +148,29 @@ func scanInvite(row interface{ Scan(...any) error }) (Invite, error) {
 
 const inviteCols = "id, temp_pubkey, temp_ip, assigned_ip, created_at, expires_at, used_at, used_by"
 
-// Invites renvoie les invitations non annulées, les plus récentes d'abord.
+// Invites returns the non-cancelled invitations, newest first.
 func (s *Service) Invites(ctx context.Context) ([]Invite, error) {
 	rows, err := s.st.R.QueryContext(ctx, "SELECT "+inviteCols+" FROM invites WHERE cancelled = 0 ORDER BY created_at DESC")
 	if err != nil {
-		return nil, fmt.Errorf("lecture des invitations : %w", err)
+		return nil, fmt.Errorf("reading invitations: %w", err)
 	}
 	defer rows.Close()
 	var out []Invite
 	for rows.Next() {
 		inv, err := scanInvite(rows)
 		if err != nil {
-			return nil, fmt.Errorf("lecture des invitations : %w", err)
+			return nil, fmt.Errorf("reading invitations: %w", err)
 		}
 		out = append(out, inv)
 	}
 	return out, rows.Err()
 }
 
-// CancelInvite annule une invitation encore inutilisée.
+// CancelInvite cancels an invitation not used yet.
 func (s *Service) CancelInvite(ctx context.Context, id string) error {
 	res, err := s.st.W.ExecContext(ctx, "UPDATE invites SET cancelled = 1 WHERE id = ? AND used_at = 0", id)
 	if err != nil {
-		return fmt.Errorf("annulation de l'invitation : %w", err)
+		return fmt.Errorf("cancelling the invitation: %w", err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrInviteUnknown
@@ -180,9 +178,9 @@ func (s *Service) CancelInvite(ctx context.Context, id string) error {
 	return nil
 }
 
-// TempPeers renvoie les clés temporaires à déclarer dans WireGuard : celles
-// des invitations en attente, et celles utilisées depuis moins de 2 minutes
-// (le temps que la réponse de /join arrive).
+// TempPeers returns the temporary keys to declare in WireGuard: those of
+// pending invitations, and those used less than 2 minutes ago (time for the
+// /join response to arrive).
 func (s *Service) TempPeers(ctx context.Context) []Invite {
 	now := s.now()
 	rows, err := s.st.R.QueryContext(ctx, "SELECT "+inviteCols+` FROM invites
@@ -200,7 +198,7 @@ func (s *Service) TempPeers(ctx context.Context) []Invite {
 	return out
 }
 
-// InviteByTempIP dit si une adresse est celle d'une clé temporaire en cours.
+// InviteByTempIP reports whether an address belongs to a current temporary key.
 func (s *Service) InviteByTempIP(ctx context.Context, ip netip.Addr) bool {
 	for _, inv := range s.TempPeers(ctx) {
 		if inv.TempIP == ip {
@@ -210,25 +208,25 @@ func (s *Service) InviteByTempIP(ctx context.Context, ip netip.Addr) bool {
 	return false
 }
 
-// JoinRequest est envoyée par le nouveau membre, avec la clé temporaire.
+// JoinRequest is sent by the new member, with the temporary key.
 type JoinRequest struct {
 	Token   string          `json:"token"`
-	NodeID  string          `json:"node_id"`  // vraie clé publique WireGuard
-	SignPub []byte          `json:"sign_pub"` // clé publique Ed25519
-	Body    json.RawMessage `json:"body"`     // corps de sa fiche, déjà signé par lui
+	NodeID  string          `json:"node_id"`  // real WireGuard public key
+	SignPub []byte          `json:"sign_pub"` // Ed25519 public key
+	Body    json.RawMessage `json:"body"`     // body of its record, already signed by itself
 	BodySig []byte          `json:"body_sig"`
 }
 
-// JoinResponse est la réponse de l'invitant.
+// JoinResponse is the inviter's response.
 type JoinResponse struct {
 	Admission    json.RawMessage `json:"admission"`
 	AdmissionSig []byte          `json:"admission_sig"`
 	Table        Table           `json:"table"`
 }
 
-// AcceptJoin traite une demande d'adhésion arrivée depuis l'adresse temporaire
-// tempIP. Une demande répétée par le même nœud (réponse perdue) reçoit la
-// même réponse.
+// AcceptJoin handles a join request coming from the temporary address
+// tempIP. A request repeated by the same node (lost response) gets the same
+// response.
 func (s *Service) AcceptJoin(ctx context.Context, tempIP netip.Addr, req JoinRequest) (JoinResponse, error) {
 	s.joinMu.Lock()
 	defer s.joinMu.Unlock()
@@ -245,7 +243,7 @@ func (s *Service) AcceptJoin(ctx context.Context, tempIP netip.Addr, req JoinReq
 		return JoinResponse{}, ErrInviteUnknown
 	}
 	if err != nil {
-		return JoinResponse{}, fmt.Errorf("lecture de l'invitation : %w", err)
+		return JoinResponse{}, fmt.Errorf("reading the invitation: %w", err)
 	}
 	if subtle.ConstantTimeCompare(hash, tokenHash(req.Token)) != 1 {
 		return JoinResponse{}, ErrInviteUnknown
@@ -268,41 +266,41 @@ func (s *Service) AcceptJoin(ctx context.Context, tempIP netip.Addr, req JoinReq
 	circle := s.circle
 	if _, known := s.members[req.NodeID]; known {
 		s.mu.Unlock()
-		return JoinResponse{}, errors.New("ce nœud est déjà membre du cercle")
+		return JoinResponse{}, errors.New("this node is already a member of the circle")
 	}
 	s.mu.Unlock()
 	var b Body
 	if len(req.SignPub) != ed25519.PublicKeySize || !verify(req.SignPub, ctxBody, req.Body, req.BodySig) ||
 		json.Unmarshal(req.Body, &b) != nil || b.NodeID != req.NodeID || b.Circle != circle || b.TunnelIP != assigned {
-		return JoinResponse{}, errors.New("demande d'adhésion invalide")
+		return JoinResponse{}, errors.New("invalid join request")
 	}
 	adm, admSig, err := NewAdmission(s.id.Sign, Admission{Circle: circle, NodeID: req.NodeID, SignPub: req.SignPub,
 		JoinedAt: s.now().UnixNano(), InvitedBy: s.id.NodeID})
 	if err != nil {
 		return JoinResponse{}, err
 	}
-	f := Fiche{Admission: adm, AdmissionSig: admSig, Body: req.Body, BodySig: req.BodySig}
-	if _, err := s.Merge(ctx, Table{Fiches: []Fiche{f}}); err != nil {
+	f := Record{Admission: adm, AdmissionSig: admSig, Body: req.Body, BodySig: req.BodySig}
+	if _, err := s.Merge(ctx, Table{Records: []Record{f}}); err != nil {
 		return JoinResponse{}, err
 	}
 	if _, ok := s.Member(req.NodeID); !ok {
-		return JoinResponse{}, errors.New("fiche du nouveau membre refusée")
+		return JoinResponse{}, errors.New("new member's record refused")
 	}
 	resp := JoinResponse{Admission: adm, AdmissionSig: admSig, Table: s.Table()}
 	raw, _ := json.Marshal(resp)
 	res, err := s.st.W.ExecContext(ctx, `UPDATE invites SET used_at = ?, used_by = ?, response = ? WHERE id = ? AND used_at = 0`,
 		s.now().UnixNano(), req.NodeID, string(raw), id)
 	if err != nil {
-		return JoinResponse{}, fmt.Errorf("enregistrement de l'adhésion : %w", err)
+		return JoinResponse{}, fmt.Errorf("storing the membership: %w", err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return JoinResponse{}, ErrInviteUsed // deux demandes concurrentes : la première a gagné
+		return JoinResponse{}, ErrInviteUsed // two concurrent requests: the first one won
 	}
-	s.log.Info("nouveau membre admis", "node_id", req.NodeID, "name", b.Name, "tunnel_ip", assigned)
+	s.log.Info("new member admitted", "node_id", req.NodeID, "name", b.Name, "tunnel_ip", assigned)
 	return resp, nil
 }
 
-// PrepareJoin construit la demande d'adhésion du nœud local.
+// PrepareJoin builds the local node's join request.
 func (s *Service) PrepareJoin(code Code, name string, announced []string) (JoinRequest, error) {
 	if s.InCircle() {
 		return JoinRequest{}, ErrAlreadyInCircle
@@ -318,7 +316,7 @@ func (s *Service) PrepareJoin(code Code, name string, announced []string) (JoinR
 	return JoinRequest{Token: code.Token, NodeID: s.id.NodeID, SignPub: s.id.Sign.Public().(ed25519.PublicKey), Body: body, BodySig: sig}, nil
 }
 
-// CompleteJoin enregistre l'adhésion après la réponse de l'invitant.
+// CompleteJoin stores the membership after the inviter's response.
 func (s *Service) CompleteJoin(ctx context.Context, code Code, req JoinRequest, resp JoinResponse) error {
 	subnet, err := netip.ParsePrefix(code.Subnet)
 	if err != nil {
@@ -329,6 +327,6 @@ func (s *Service) CompleteJoin(ctx context.Context, code Code, req JoinRequest, 
 	if s.circle != "" {
 		return ErrAlreadyInCircle
 	}
-	self := Fiche{Admission: resp.Admission, AdmissionSig: resp.AdmissionSig, Body: req.Body, BodySig: req.BodySig}
+	self := Record{Admission: resp.Admission, AdmissionSig: resp.AdmissionSig, Body: req.Body, BodySig: req.BodySig}
 	return s.enterLocked(ctx, code.Circle, subnet, self, resp.Table)
 }

@@ -1,27 +1,27 @@
-# Exemple de compose pour un membre du cercle. À adapter : user, NODE_NAME,
-# WG_PUBLIC_ENDPOINTS, UI_PASSWORD et les trois dossiers.
+# Compose template for a circle member. Adjust: user, NODE_NAME,
+# WG_PUBLIC_ENDPOINTS, UI_PASSWORD and the three folders.
 services:
   cercle:
     image: ghcr.io/db-cl/cercle:1
     container_name: cercle
-    user: "1026:100"            # utilisateur du NAS propriétaire des dossiers (commande id sur le NAS)
+    user: "1026:100"            # NAS user owning the folders (run `id` on the NAS)
     read_only: true
-    cap_drop: [ALL]                # aucune capacité Linux nécessaire (WireGuard en espace utilisateur)
+    cap_drop: [ALL]             # no Linux capability needed (user-space WireGuard)
     security_opt: ["no-new-privileges:true"]
     tmpfs:
       - /tmp
     ports:
-      - "51820:51820/udp"       # à rediriger sur la box, en UDP
-      - "8080:8080"             # interface web, à garder sur le réseau local
+      - "51820:51820/udp"       # forward this UDP port on your router
+      - "8080:8080"             # web interface, keep it on the local network
     environment:
       NODE_NAME: alice
       WG_PUBLIC_ENDPOINTS: "alice.duckdns.org:51820"
-      UI_PASSWORD: "change-moi"
+      UI_PASSWORD: "change-me"
       UPLOAD_LIMIT: 20M
       MAX_UPLOADS: 3
       TZ: Europe/Paris
     volumes:
-      - /volume1/partage:/share:ro
-      - /volume1/recu:/downloads
+      - /volume1/share:/share:ro
+      - /volume1/received:/downloads
       - /volume1/docker/cercle:/data
     restart: unless-stopped

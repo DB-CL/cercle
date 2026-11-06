@@ -1,8 +1,8 @@
-// Package config lit la configuration du nœud depuis les variables d'environnement.
+// Package config reads the node configuration from environment variables.
 //
-// Les réglages modifiables à chaud (limites, créneaux) seront ensuite surchargés
-// par les valeurs stockées en base (jalon J2) : la base prime après la première
-// modification depuis l'interface.
+// Settings that can be changed live (limits, windows) are then overridden by
+// the values stored in the database: once changed from the interface, the
+// stored value takes precedence.
 package config
 
 import (
@@ -17,19 +17,19 @@ import (
 	"time"
 )
 
-// Config regroupe tous les réglages du nœud.
+// Config holds every node setting.
 type Config struct {
 	NodeName          string
 	WGListenPort      int
-	WGPublicEndpoints []string // hôte:port, résolus plus tard (les noms DynDNS changent)
+	WGPublicEndpoints []string // host:port, resolved later (DynDNS names change)
 	TunnelSubnet      netip.Prefix
 
 	UIListen   string
 	UIPassword string
 
-	UploadLimit  int64 // octets par seconde, 0 = illimité
+	UploadLimit  int64 // bytes per second, 0 = unlimited
 	MaxUploads   int
-	UploadWindow *Window // nil = toujours ouvert
+	UploadWindow *Window // nil = always open
 
 	DownloadLimit       int64
 	DownloadConcurrency int
@@ -40,14 +40,14 @@ type Config struct {
 	InviteTTL    time.Duration
 	LogLevel     slog.Level
 
-	// Chemins des volumes. Fixes dans l'image, surchargeables pour le développement.
+	// Volume paths. Fixed in the image, overridable for development.
 	DataDir      string
 	ShareDir     string
 	DownloadsDir string
 }
 
-// Load lit la configuration. getenv vaut en général os.Getenv ; les tests
-// passent une fonction qui lit une table.
+// Load reads the configuration. getenv is usually os.Getenv; tests pass a
+// function reading a map.
 func Load(getenv func(string) string) (Config, error) {
 	p := parser{getenv: getenv}
 	c := Config{
@@ -72,7 +72,7 @@ func Load(getenv func(string) string) (Config, error) {
 		DownloadsDir:        p.str("DOWNLOADS_DIR", "/downloads"),
 	}
 	if err := errors.Join(p.errs...); err != nil {
-		return Config{}, fmt.Errorf("configuration invalide : %w", err)
+		return Config{}, fmt.Errorf("invalid configuration: %w", err)
 	}
 	return c, nil
 }
@@ -85,14 +85,14 @@ func defaultHostname() string {
 	return h
 }
 
-// parser accumule les erreurs pour toutes les signaler d'un coup.
+// parser collects errors to report them all at once.
 type parser struct {
 	getenv func(string) string
 	errs   []error
 }
 
 func (p *parser) fail(name, val string, err error) {
-	p.errs = append(p.errs, fmt.Errorf("%s=%q : %w", name, val, err))
+	p.errs = append(p.errs, fmt.Errorf("%s=%q: %w", name, val, err))
 }
 
 func (p *parser) str(name, def string) string {
@@ -109,7 +109,7 @@ func (p *parser) port(name string, def int) int {
 	}
 	n, err := strconv.Atoi(v)
 	if err != nil || n < 1 || n > 65535 {
-		p.fail(name, v, errors.New("port attendu entre 1 et 65535"))
+		p.fail(name, v, errors.New("expected a port between 1 and 65535"))
 		return def
 	}
 	return n
@@ -122,7 +122,7 @@ func (p *parser) positive(name string, def int) int {
 	}
 	n, err := strconv.Atoi(v)
 	if err != nil || n < 1 {
-		p.fail(name, v, errors.New("entier positif attendu"))
+		p.fail(name, v, errors.New("expected a positive integer"))
 		return def
 	}
 	return n
@@ -135,7 +135,7 @@ func (p *parser) duration(name string, def time.Duration) time.Duration {
 	}
 	d, err := time.ParseDuration(v)
 	if err != nil || d <= 0 {
-		p.fail(name, v, errors.New("durée positive attendue (ex. 1h, 30m)"))
+		p.fail(name, v, errors.New("expected a positive duration (e.g. 1h, 30m)"))
 		return def
 	}
 	return d
@@ -167,7 +167,7 @@ func (p *parser) prefix(name, def string) netip.Prefix {
 	v := p.str(name, def)
 	pfx, err := netip.ParsePrefix(v)
 	if err != nil || !pfx.Addr().Is4() || pfx.Bits() > 29 || pfx.Bits() < 8 {
-		p.fail(name, v, errors.New("sous-réseau IPv4 attendu, de /8 à /29 (ex. 10.42.0.0/24)"))
+		p.fail(name, v, errors.New("expected an IPv4 subnet from /8 to /29 (e.g. 10.42.0.0/24)"))
 		return netip.MustParsePrefix(def)
 	}
 	return pfx.Masked()
@@ -192,7 +192,7 @@ func (p *parser) endpoints(name string) []string {
 				continue
 			}
 		}
-		p.fail(name, ep, errors.New("hôte:port attendu (IPv6 entre crochets : [2001:db8::1]:51820)"))
+		p.fail(name, ep, errors.New("expected host:port (IPv6 in brackets: [2001:db8::1]:51820)"))
 	}
 	return eps
 }
@@ -204,13 +204,13 @@ func (p *parser) level(name string) slog.Level {
 	}
 	var l slog.Level
 	if err := l.UnmarshalText([]byte(v)); err != nil {
-		p.fail(name, v, errors.New("debug, info, warn ou error attendu"))
+		p.fail(name, v, errors.New("expected debug, info, warn or error"))
 		return slog.LevelInfo
 	}
 	return l
 }
 
-// Clés des réglages modifiables depuis l'interface, stockés en base.
+// Keys of the settings editable from the interface, stored in the database.
 const (
 	SettingNodeName            = "node_name"
 	SettingUploadLimit         = "upload_limit"
@@ -221,9 +221,9 @@ const (
 	SettingDownloadWindow      = "download_window"
 )
 
-// ApplySettings remplace les valeurs de l'environnement par celles stockées en
-// base : après la première modification depuis l'interface, la base prime.
-// Une valeur vide pour un créneau signifie « toujours ouvert ».
+// ApplySettings replaces environment values with the stored ones: once
+// changed from the interface, the stored value takes precedence. An empty
+// window means "always open".
 func (c *Config) ApplySettings(get func(key string) (string, bool, error)) error {
 	var errs []error
 	apply := func(key string, set func(string) error) {
@@ -236,7 +236,7 @@ func (c *Config) ApplySettings(get func(key string) (string, bool, error)) error
 			return
 		}
 		if err := set(v); err != nil {
-			errs = append(errs, fmt.Errorf("réglage %s=%q : %w", key, v, err))
+			errs = append(errs, fmt.Errorf("setting %s=%q: %w", key, v, err))
 		}
 	}
 	rateSetter := func(dst *int64) func(string) error {
@@ -252,7 +252,7 @@ func (c *Config) ApplySettings(get func(key string) (string, bool, error)) error
 		return func(v string) error {
 			n, err := strconv.Atoi(v)
 			if err != nil || n < 1 {
-				return errors.New("entier positif attendu")
+				return errors.New("expected a positive integer")
 			}
 			*dst = n
 			return nil
@@ -273,7 +273,7 @@ func (c *Config) ApplySettings(get func(key string) (string, bool, error)) error
 	}
 	apply(SettingNodeName, func(v string) error {
 		if strings.TrimSpace(v) == "" {
-			return errors.New("nom vide")
+			return errors.New("empty name")
 		}
 		c.NodeName = v
 		return nil

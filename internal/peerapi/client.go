@@ -22,23 +22,23 @@ const (
 	connectTimeout = 10 * time.Second
 	idleTimeout    = 60 * time.Second
 
-	// Plafonds de ce qu'on accepte d'un pair : un membre malveillant ne doit
-	// pas pouvoir épuiser la mémoire d'un autre avec une réponse sans fin.
-	maxResponse = 8 << 20   // table de gossip, page de dossier, info, adhésion
-	maxTree     = 512 << 20 // arborescence en NDJSON (500 000 fichiers ≈ 75 Mo)
+	// Caps on what we accept from a peer: a malicious member must not be able
+	// to exhaust another's memory with an endless response.
+	maxResponse = 8 << 20   // gossip table, folder page, info, join
+	maxTree     = 512 << 20 // NDJSON tree (500,000 files ≈ 75 MB)
 )
 
-// DialFunc ouvre une connexion TCP dans le tunnel.
+// DialFunc opens a TCP connection in the tunnel.
 type DialFunc func(ctx context.Context, network, address string) (net.Conn, error)
 
-// Client appelle l'API des autres nœuds.
+// Client calls the other nodes' API.
 type Client struct {
 	http     *http.Client
 	circleID string
 }
 
-// NewClient crée un client qui passe par le tunnel. Délais : 10 s pour se
-// connecter, 60 s sans aucun octet échangé avant d'abandonner.
+// NewClient creates a client going through the tunnel. Timeouts: 10 s to
+// connect, 60 s without any byte exchanged before giving up.
 func NewClient(dial DialFunc, circleID string) *Client {
 	tr := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -58,13 +58,13 @@ func NewClient(dial DialFunc, circleID string) *Client {
 	return &Client{http: &http.Client{Transport: tr}, circleID: circleID}
 }
 
-// WithCircle renvoie un client qui partage les connexions de c mais présente
-// un autre identifiant de cercle (le cercle est connu après l'adhésion).
+// WithCircle returns a client sharing c's connections but presenting another
+// circle ID (the circle is known after joining).
 func (c *Client) WithCircle(circle string) *Client {
 	return &Client{http: c.http, circleID: circle}
 }
 
-// StatusError est une réponse HTTP autre que 2xx.
+// StatusError is a non-2xx HTTP response.
 type StatusError struct {
 	Code       int
 	Message    string
@@ -72,18 +72,18 @@ type StatusError struct {
 }
 
 func (e *StatusError) Error() string {
-	return fmt.Sprintf("le pair a répondu %d : %s", e.Code, e.Message)
+	return fmt.Sprintf("peer replied %d: %s", e.Code, e.Message)
 }
 
-// HTTPStatus renvoie le code HTTP (interface lue par transfer, sans dépendance).
+// HTTPStatus returns the HTTP code (interface read by transfer, without a dependency).
 func (e *StatusError) HTTPStatus() int { return e.Code }
 
-// RetryDelay renvoie le Retry-After du pair, 0 s'il est absent.
+// RetryDelay returns the peer's Retry-After, 0 if absent.
 func (e *StatusError) RetryDelay() time.Duration { return e.RetryAfter }
 
-// Download demande le fichier distant à partir de offset. Si offset > 0, la
-// reprise est conditionnée par etag (If-Range) : si le fichier a changé, le
-// pair renvoie 200 et le fichier entier. Le corps est à fermer par l'appelant.
+// Download requests the remote file from offset. If offset > 0, resuming is
+// conditioned on etag (If-Range): if the file changed, the peer returns 200
+// and the whole file. The caller must close the body.
 func (c *Client) Download(ctx context.Context, peer netip.Addr, path string, offset int64, etag string) (*http.Response, error) {
 	hdr := http.Header{}
 	if offset > 0 {
@@ -95,15 +95,15 @@ func (c *Client) Download(ctx context.Context, peer netip.Addr, path string, off
 	return c.doHeader(ctx, http.MethodGet, peer, "/api/v1/file?"+url.Values{"path": {path}}.Encode(), nil, hdr)
 }
 
-// Info interroge GET /api/v1/info.
+// Info queries GET /api/v1/info.
 func (c *Client) Info(ctx context.Context, peer netip.Addr) (Info, error) {
 	var info Info
 	err := c.getJSON(ctx, peer, "/api/v1/info", &info)
 	return info, err
 }
 
-// Join envoie une demande d'adhésion (avec la clé temporaire). Les refus
-// connus sont rendus sous forme d'erreurs de membership.
+// Join sends a join request (with the temporary key). Known refusals are
+// returned as membership errors.
 func (c *Client) Join(ctx context.Context, inviter netip.Addr, req membership.JoinRequest) (membership.JoinResponse, error) {
 	var resp membership.JoinResponse
 	err := c.postJSON(ctx, inviter, "/api/v1/join", req, &resp)
@@ -121,7 +121,7 @@ func (c *Client) Join(ctx context.Context, inviter netip.Addr, req membership.Jo
 	return resp, err
 }
 
-// Gossip envoie la table locale et renvoie celle du pair après fusion.
+// Gossip sends the local table and returns the peer's after merging.
 func (c *Client) Gossip(ctx context.Context, peer netip.Addr, t membership.Table) (membership.Table, error) {
 	var out membership.Table
 	err := c.postJSON(ctx, peer, "/api/v1/gossip", t, &out)
@@ -139,12 +139,12 @@ func (c *Client) postJSON(ctx context.Context, peer netip.Addr, path string, in,
 	}
 	defer resp.Body.Close()
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponse)).Decode(out); err != nil {
-		return fmt.Errorf("réponse de %v illisible (%s) : %w", peer, path, err)
+		return fmt.Errorf("unreadable response from %v (%s): %w", peer, path, err)
 	}
 	return nil
 }
 
-// Files lit une page du contenu d'un dossier distant ("" = racine).
+// Files reads a page of a remote folder ("" = root).
 func (c *Client) Files(ctx context.Context, peer netip.Addr, dir, cursor string) (FilesPage, error) {
 	q := url.Values{"path": {dir}}
 	if cursor != "" {
@@ -155,7 +155,7 @@ func (c *Client) Files(ctx context.Context, peer netip.Addr, dir, cursor string)
 	return page, err
 }
 
-// Tree appelle fn pour chaque fichier distant sous dir.
+// Tree calls fn for every remote file under dir.
 func (c *Client) Tree(ctx context.Context, peer netip.Addr, dir string, fn func(index.Entry) error) error {
 	resp, err := c.do(ctx, http.MethodGet, peer, "/api/v1/tree?"+url.Values{"path": {dir}}.Encode(), nil)
 	if err != nil {
@@ -170,7 +170,7 @@ func (c *Client) Tree(ctx context.Context, peer netip.Addr, dir string, fn func(
 			return nil
 		}
 		if err != nil {
-			return fmt.Errorf("arborescence de %v illisible : %w", peer, err)
+			return fmt.Errorf("unreadable tree from %v: %w", peer, err)
 		}
 		if err := fn(e); err != nil {
 			return err
@@ -186,7 +186,7 @@ func (c *Client) doHeader(ctx context.Context, method string, peer netip.Addr, p
 	target := "http://" + netip.AddrPortFrom(peer, Port).String() + path
 	req, err := http.NewRequestWithContext(ctx, method, target, body)
 	if err != nil {
-		return nil, fmt.Errorf("requête %s : %w", path, err)
+		return nil, fmt.Errorf("request %s: %w", path, err)
 	}
 	for k, v := range hdr {
 		req.Header[k] = v
@@ -194,7 +194,7 @@ func (c *Client) doHeader(ctx context.Context, method string, peer netip.Addr, p
 	req.Header.Set(CircleHeader, c.circleID)
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("pair %v injoignable : %w", peer, err)
+		return nil, fmt.Errorf("peer %v unreachable: %w", peer, err)
 	}
 	if resp.StatusCode/100 != 2 {
 		defer resp.Body.Close()
@@ -218,13 +218,13 @@ func (c *Client) getJSON(ctx context.Context, peer netip.Addr, path string, v an
 	}
 	defer resp.Body.Close()
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponse)).Decode(v); err != nil {
-		return fmt.Errorf("réponse de %v illisible (%s) : %w", peer, path, err)
+		return fmt.Errorf("unreadable response from %v (%s): %w", peer, path, err)
 	}
 	return nil
 }
 
-// idleConn coupe la connexion après 60 s sans aucun octet lu ou écrit : un
-// pair qui disparaît ne bloque jamais un transfert.
+// idleConn closes the connection after 60 s without any byte read or
+// written: a vanishing peer never blocks a transfer.
 type idleConn struct {
 	net.Conn
 }

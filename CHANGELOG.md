@@ -1,12 +1,17 @@
-# Changements
+# Changelog
 
-## 1.0.0 (6 novembre 2026)
+## Unreleased
 
-Première version.
+- Everything translated to English: interface, messages, logs, comments, documentation.
+- Shorter README; documentation folder removed.
 
-- Image Docker unique (amd64, arm64, armv7, environ 15 Mo), WireGuard embarqué en espace utilisateur : aucun privilège, aucun module noyau.
-- Cercle créé en un clic, invitation par un code à usage unique, fiches signées Ed25519, gossip, révocation définitive.
-- Partage en lecture seule des dossiers montés sous `/share`, choisis dans les réglages ; index incrémental (500 000 fichiers en 13 s).
-- File de téléchargement persistante avec reprise, nouvelles tentatives, priorité, pause ; limites de débit et créneaux horaires dans les deux sens.
-- Interface web en français, style terminal, page de connexion par mot de passe, mise à jour en direct.
-- Durcissement : mot de passe toujours exigé, conteneur sans privilège ni capacité, confinement des chemins à l'envoi et à la réception, réponses des pairs plafonnées.
+## 1.0.0 (November 6, 2026)
+
+First release.
+
+- Single Docker image (amd64, arm64, armv7, about 15 MB), WireGuard embedded in user space: no privileges, no kernel module.
+- One-click circle creation, single-use invitation codes, Ed25519-signed member records, gossip, final revocation.
+- Read-only sharing of the folders mounted under `/share`, selected in the settings; incremental index (500,000 files in 13 s).
+- Persistent download queue with resume, retries, priority and pause; rate limits and time windows in both directions.
+- Terminal-style web interface, password login page, live updates.
+- Hardening: password always required, container without privileges or capabilities, path confinement on both sides, capped peer responses.

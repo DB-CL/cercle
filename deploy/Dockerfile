@@ -1,14 +1,14 @@
 # syntax=docker/dockerfile:1
-# Image de Cercle : binaire Go statique dans scratch.
-# La compilation est croisée (GOARCH) sur la plateforme de build : aucune
-# émulation n'est nécessaire, quelle que soit l'architecture visée.
+# Cercle image: static Go binary in scratch.
+# Cross-compiled (GOARCH) on the build platform: no emulation is needed,
+# whatever the target architecture.
 #
 #   docker build -f deploy/Dockerfile -t cercle .
 #   docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 -f deploy/Dockerfile .
 
 FROM --platform=$BUILDPLATFORM golang:1.27.3-bookworm AS build
 ARG TARGETOS TARGETARCH TARGETVARIANT
-ARG VERSION=dev COMMIT=inconnu DATE=inconnue
+ARG VERSION=dev COMMIT=unknown DATE=unknown
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

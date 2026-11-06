@@ -18,7 +18,7 @@ func TestOpenMigrateAndSettings(t *testing.T) {
 		t.Fatalf("journal_mode = %q, %v", mode, err)
 	}
 	if _, ok, err := s.Setting(ctx, "upload_limit"); ok || err != nil {
-		t.Fatalf("réglage absent attendu : %v, %v", ok, err)
+		t.Fatalf("expected no setting: %v, %v", ok, err)
 	}
 	if err := s.SetSetting(ctx, "upload_limit", "10M"); err != nil {
 		t.Fatal(err)
@@ -27,11 +27,11 @@ func TestOpenMigrateAndSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := s.R.ExecContext(ctx, "INSERT INTO settings VALUES ('x', 'y')"); err == nil {
-		t.Error("le pool de lecture accepte une écriture")
+		t.Error("the read pool accepts a write")
 	}
 	s.Close()
 
-	// Réouverture : migrations déjà appliquées, réglage conservé.
+	// Reopening: migrations already applied, setting kept.
 	s, err = Open(ctx, path)
 	if err != nil {
 		t.Fatal(err)
@@ -39,7 +39,7 @@ func TestOpenMigrateAndSettings(t *testing.T) {
 	defer s.Close()
 	v, ok, err := s.Setting(ctx, "upload_limit")
 	if !ok || err != nil || v != "20M" {
-		t.Fatalf("réglage relu = %q, %v, %v", v, ok, err)
+		t.Fatalf("setting read back = %q, %v, %v", v, ok, err)
 	}
 	var ver int
 	if err := s.R.QueryRowContext(ctx, "PRAGMA user_version").Scan(&ver); err != nil || ver < 1 {

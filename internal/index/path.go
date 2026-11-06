@@ -1,5 +1,5 @@
-// Package index parcourt le dossier partagé, l'indexe dans SQLite et répond
-// aux requêtes de navigation des pairs.
+// Package index walks the shared folder, indexes it in SQLite and answers
+// the peers' browsing requests.
 package index
 
 import (
@@ -9,15 +9,16 @@ import (
 	"strings"
 )
 
-// ErrBadPath signale un chemin refusé : absolu, avec « .. » ou malformé.
-var ErrBadPath = errors.New("chemin refusé")
+// ErrBadPath reports a refused path: absolute, containing "..", or malformed.
+var ErrBadPath = errors.New("path refused")
 
-// ErrNotFound signale un chemin absent de l'index (inexistant ou exclu).
-var ErrNotFound = errors.New("chemin introuvable")
+// ErrNotFound reports a path missing from the index (absent or excluded).
+var ErrNotFound = errors.New("path not found")
 
-// CleanPath valide un chemin relatif reçu d'un pair et le normalise : séparé
-// par des /, sans / initial ni final, "" pour la racine. Tout chemin absolu ou
-// contenant « .. » est refusé, même si son nettoyage retomberait dans le partage.
+// CleanPath validates a relative path received from a peer and normalizes it:
+// slash-separated, no leading or trailing slash, "" for the root. Any absolute
+// path or path containing ".." is refused, even if cleaning it would land back
+// inside the share.
 func CleanPath(p string) (string, error) {
 	if p == "" || p == "." {
 		return "", nil
@@ -40,7 +41,7 @@ func CleanPath(p string) (string, error) {
 	return c, nil
 }
 
-// parentOf renvoie le dossier parent d'un chemin normalisé ("" pour la racine).
+// parentOf returns the parent folder of a normalized path ("" for the root).
 func parentOf(p string) string {
 	d := path.Dir(p)
 	if d == "." {

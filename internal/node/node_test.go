@@ -52,7 +52,7 @@ func newTNode(t *testing.T, name string) *tnode {
 	if err := os.MkdirAll(cfg.ShareDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(cfg.ShareDir, name+".txt"), []byte("partage de "+name), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(cfg.ShareDir, name+".txt"), []byte("share of "+name), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	tn := &tnode{t: t, name: name, cfg: cfg}
@@ -63,7 +63,7 @@ func newTNode(t *testing.T, name string) *tnode {
 
 func (tn *tnode) start() {
 	tn.t.Helper()
-	// CERCLE_REAL_GOSSIP=1 : intervalle réel de 30 s, pour vérifier les délais du PRD.
+	// CERCLE_REAL_GOSSIP=1: real 30 s interval, to check the real delays.
 	interval := 300 * time.Millisecond
 	if os.Getenv("CERCLE_REAL_GOSSIP") != "" {
 		interval = 30 * time.Second
@@ -83,7 +83,7 @@ func (tn *tnode) stop() {
 	}
 	tn.cancel()
 	if err := <-tn.done; err != nil {
-		tn.t.Errorf("%s : Run : %v", tn.name, err)
+		tn.t.Errorf("%s: Run: %v", tn.name, err)
 	}
 	tn.n.Close()
 	tn.cancel = nil
@@ -96,20 +96,20 @@ func (tn *tnode) self() membership.Member {
 	return m
 }
 
-// eventually attend que cond devienne vraie, au plus d.
+// eventually waits until cond holds, d at most.
 func eventually(t *testing.T, d time.Duration, what string, cond func() bool) time.Duration {
 	t.Helper()
 	start := time.Now()
 	for !cond() {
 		if time.Since(start) > d {
-			t.Fatalf("délai de %v dépassé : %s", d, what)
+			t.Fatalf("%v timeout exceeded: %s", d, what)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	return time.Since(start)
 }
 
-// info interroge un pair à travers le tunnel de from.
+// info queries a peer through from's tunnel.
 func info(from *tnode, to membership.Member) (peerapi.Info, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -125,82 +125,82 @@ func TestCircleAcceptance(t *testing.T) {
 	ctx := context.Background()
 	alice, bob, carol := newTNode(t, "alice"), newTNode(t, "bob"), newTNode(t, "carol")
 
-	// Critère : un nœud neuf crée un cercle en un clic et obtient 10.42.0.1.
+	// Criterion: a new node creates a circle in one click and gets 10.42.0.1.
 	if err := alice.n.CreateCircle(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if ip := alice.self().TunnelIP; ip != netip.MustParseAddr("10.42.0.1") {
-		t.Fatalf("fondateur en %v", ip)
+		t.Fatalf("founder at %v", ip)
 	}
 
-	// Critère : un second nœud rejoint avec un code collé, sans autre configuration.
+	// Criterion: a second node joins with a pasted code, no other configuration.
 	code, _, err := alice.n.Invite(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := bob.n.Join(ctx, code); err != nil {
-		t.Fatalf("bob rejoint : %v", err)
+		t.Fatalf("bob joins: %v", err)
 	}
-	eventually(t, 10*time.Second, "bob joint alice", func() bool { _, err := info(bob, alice.self()); return err == nil })
-	eventually(t, 10*time.Second, "alice joint bob", func() bool { _, err := info(alice, bob.self()); return err == nil })
+	eventually(t, 10*time.Second, "bob reaches alice", func() bool { _, err := info(bob, alice.self()); return err == nil })
+	eventually(t, 10*time.Second, "alice reaches bob", func() bool { _, err := info(alice, bob.self()); return err == nil })
 
-	// Critère : un code déjà utilisé est refusé avec un message clair.
+	// Criterion: a used code is refused with a clear message.
 	if err := carol.n.Join(ctx, code); !errors.Is(err, membership.ErrInviteUsed) {
-		t.Fatalf("code réutilisé : %v", err)
+		t.Fatalf("reused code: %v", err)
 	}
 
-	// Critère : un troisième nœud invité par le deuxième apparaît chez le premier
-	// en moins de 2 minutes, et les deux se parlent directement.
+	// Criterion: a third node invited by the second shows up at the first in
+	// under 2 minutes, and both talk directly.
 	code2, _, err := bob.n.Invite(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := carol.n.Join(ctx, code2); err != nil {
-		t.Fatalf("carol rejoint : %v", err)
+		t.Fatalf("carol joins: %v", err)
 	}
-	d := eventually(t, 2*time.Minute, "alice connaît carol", func() bool { return knows(alice, carol.id()) })
-	d2 := eventually(t, 2*time.Minute, "alice et carol se parlent", func() bool {
+	d := eventually(t, 2*time.Minute, "alice knows carol", func() bool { return knows(alice, carol.id()) })
+	d2 := eventually(t, 2*time.Minute, "alice and carol talk", func() bool {
 		_, e1 := info(alice, carol.self())
 		_, e2 := info(carol, alice.self())
 		return e1 == nil && e2 == nil
 	})
-	t.Logf("carol connue d'alice en %v, liaison directe en %v de plus", d.Round(time.Millisecond), d2.Round(time.Millisecond))
+	t.Logf("carol known to alice in %v, direct link %v later", d.Round(time.Millisecond), d2.Round(time.Millisecond))
 
-	// Les trois adresses sont distinctes et dans le sous-réseau.
+	// The three addresses are distinct and inside the subnet.
 	seen := map[netip.Addr]string{}
 	for _, tn := range []*tnode{alice, bob, carol} {
 		ip := tn.self().TunnelIP
 		if other, dup := seen[ip]; dup || !tn.cfg.TunnelSubnet.Contains(ip) {
-			t.Fatalf("adresse %v de %s (doublon avec %q ?)", ip, tn.name, other)
+			t.Fatalf("address %v of %s (duplicate of %q?)", ip, tn.name, other)
 		}
 		seen[ip] = tn.name
 	}
 
-	// Critère : un membre révoqué perd l'accès à tous les nœuds en moins de 2 minutes.
+	// Criterion: a revoked member loses access to every node in under 2 minutes.
 	carolSelf := carol.self()
 	if err := alice.n.Revoke(ctx, carol.id()); err != nil {
 		t.Fatal(err)
 	}
-	d = eventually(t, 2*time.Minute, "carol coupée d'alice et de bob", func() bool {
+	d = eventually(t, 2*time.Minute, "carol cut off from alice and bob", func() bool {
 		_, e1 := info(carol, alice.self())
 		_, e2 := info(carol, bob.self())
 		return e1 != nil && e2 != nil
 	})
-	t.Logf("carol coupée de tous en %v", d.Round(time.Millisecond))
+	t.Logf("carol cut off from everyone in %v", d.Round(time.Millisecond))
 	if _, err := info(alice, carolSelf); err == nil {
-		t.Error("alice joint encore carol")
+		t.Error("alice still reaches carol")
 	}
 
-	// Y compris après redémarrage : alice redémarre, carol reste dehors, bob reste dedans.
+	// Including after a restart: alice restarts, carol stays out, bob stays in.
 	alice.stop()
 	alice.start()
 	if m, ok := alice.n.Membership().Member(carol.id()); !ok || !m.Revoked {
-		t.Fatalf("révocation perdue au redémarrage : %+v", m)
+		t.Fatalf("revocation lost on restart: %+v", m)
 	}
-	eventually(t, 10*time.Second, "bob joint alice redémarrée", func() bool { _, err := info(bob, alice.self()); return err == nil })
+	eventually(t, 10*time.Second, "bob reaches restarted alice", func() bool { _, err := info(bob, alice.self()); return err == nil })
 	time.Sleep(time.Second)
 	if _, err := info(carol, alice.self()); err == nil {
-		t.Error("carol joint alice après son redémarrage")
+		t.Error("carol reaches alice after her restart")
 	}
 }
 
@@ -217,20 +217,20 @@ func TestExpiredAndBadCodes(t *testing.T) {
 	}
 	time.Sleep(5 * time.Millisecond)
 	if err := bob.n.Join(ctx, code); !errors.Is(err, membership.ErrInviteExpired) {
-		t.Fatalf("code expiré : %v", err)
+		t.Fatalf("expired code: %v", err)
 	}
 	if err := bob.n.Join(ctx, "cercle1:nimportequoi"); !errors.Is(err, membership.ErrBadCode) {
-		t.Fatalf("code illisible : %v", err)
+		t.Fatalf("unreadable code: %v", err)
 	}
 	if err := alice.n.Join(ctx, code); !errors.Is(err, membership.ErrAlreadyInCircle) && !errors.Is(err, membership.ErrInviteExpired) {
-		t.Fatalf("membre qui rejoint : %v", err)
+		t.Fatalf("member joining: %v", err)
 	}
 	if bob.n.TunnelUp() {
-		t.Error("tunnel de bob démarré malgré l'échec")
+		t.Error("bob's tunnel started despite the failure")
 	}
 }
 
-// TestDownloadBetweenMembers : la file de J3 passe par le cercle de J4.
+// TestDownloadBetweenMembers: the download queue goes through the circle.
 func TestDownloadBetweenMembers(t *testing.T) {
 	ctx := context.Background()
 	alice, bob := newTNode(t, "alice"), newTNode(t, "bob")
@@ -244,26 +244,26 @@ func TestDownloadBetweenMembers(t *testing.T) {
 	if err := bob.n.Join(ctx, code); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, 10*time.Second, "liaison", func() bool { _, err := info(bob, alice.self()); return err == nil })
+	eventually(t, 10*time.Second, "link", func() bool { _, err := info(bob, alice.self()); return err == nil })
 	if _, _, err := bob.n.Queue().Enqueue(ctx, alice.id(), []string{""}); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(bob.cfg.DownloadsDir, "alice", "alice.txt")
-	eventually(t, 20*time.Second, "fichier reçu", func() bool {
+	eventually(t, 20*time.Second, "file received", func() bool {
 		b, err := os.ReadFile(path)
-		return err == nil && string(b) == "partage de alice"
+		return err == nil && string(b) == "share of alice"
 	})
 }
 
-// TestEnqueueWhileFicheChanges : régression d'un interblocage du 05/11/2026.
-// La mise en file gardait une transaction d'écriture ouverte pendant l'appel
-// réseau au pair ; une mise à jour de fiche simultanée, qui tient le verrou du
-// cercle et attend la connexion d'écriture, bloquait alors tout le nœud.
-func TestEnqueueWhileFicheChanges(t *testing.T) {
+// TestEnqueueWhileRecordChanges: regression test for a deadlock found on
+// 2026-11-05. Queuing kept a write transaction open during the network call to
+// the peer; a concurrent record update, holding the circle lock and waiting
+// for the write connection, then blocked the whole node.
+func TestEnqueueWhileRecordChanges(t *testing.T) {
 	ctx := context.Background()
 	alice, bob := newTNode(t, "alice"), newTNode(t, "bob")
 	for i := range 3000 {
-		p := filepath.Join(alice.cfg.ShareDir, "lot", fmt.Sprintf("f%04d.txt", i))
+		p := filepath.Join(alice.cfg.ShareDir, "batch", fmt.Sprintf("f%04d.txt", i))
 		if i == 0 {
 			_ = os.MkdirAll(filepath.Dir(p), 0o755)
 		}
@@ -281,11 +281,11 @@ func TestEnqueueWhileFicheChanges(t *testing.T) {
 	if err := bob.n.Join(ctx, code); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, 10*time.Second, "liaison", func() bool { _, err := info(bob, alice.self()); return err == nil })
+	eventually(t, 10*time.Second, "link", func() bool { _, err := info(bob, alice.self()); return err == nil })
 
 	stop := make(chan struct{})
 	churn := make(chan struct{})
-	go func() { // modifie sans arrêt la fiche de bob
+	go func() { // keeps changing bob's record
 		defer close(churn)
 		for i := 0; ; i++ {
 			select {
@@ -301,7 +301,7 @@ func TestEnqueueWhileFicheChanges(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		for range 5 {
-			if _, _, err := bob.n.Queue().Enqueue(ctx, alice.id(), []string{"lot"}); err != nil {
+			if _, _, err := bob.n.Queue().Enqueue(ctx, alice.id(), []string{"batch"}); err != nil {
 				done <- err
 				return
 			}
@@ -314,7 +314,7 @@ func TestEnqueueWhileFicheChanges(t *testing.T) {
 			t.Fatal(err)
 		}
 	case <-time.After(60 * time.Second):
-		t.Fatal("interblocage : la mise en file ne se termine pas pendant les mises à jour de fiche")
+		t.Fatal("deadlock: queuing does not finish during record updates")
 	}
 	close(stop)
 	<-churn
@@ -323,6 +323,6 @@ func TestEnqueueWhileFicheChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	if n := sum.Count["queued"] + sum.Count["active"] + sum.Count["done"] + sum.Count["waiting"]; n != 3000 {
-		t.Errorf("%d éléments en file, attendu 3000 (sans doublon)", n)
+		t.Errorf("%d items queued, want 3000 (no duplicates)", n)
 	}
 }

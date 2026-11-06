@@ -73,7 +73,7 @@ func start(t *testing.T, name, password string, files map[string]string) *tnode 
 	return &tnode{t: t, n: n, srv: srv, cfg: cfg, ui: ui}
 }
 
-// call fait une requête à l'API de l'interface ; out reçoit le JSON.
+// call makes a request to the interface API; out receives the JSON.
 func (tn *tnode) call(method, path string, body, out any) int {
 	tn.t.Helper()
 	var r io.Reader
@@ -100,7 +100,7 @@ func eventually(t *testing.T, what string, cond func() bool) {
 	deadline := time.Now().Add(20 * time.Second)
 	for !cond() {
 		if time.Now().After(deadline) {
-			t.Fatalf("délai dépassé : %s", what)
+			t.Fatalf("timed out: %s", what)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -119,46 +119,46 @@ func TestStaticAndSecurity(t *testing.T) {
 		}
 		return resp
 	}
-	// La page et ses fichiers sont publics (aucun secret) ; l'API ne l'est pas,
-	// et ne déclenche jamais la fenêtre Basic du navigateur.
+	// The page and its files are public (no secrets); the API is not, and never
+	// triggers the browser's Basic dialog.
 	r := get("/", false)
 	b, _ := io.ReadAll(r.Body)
 	r.Body.Close()
 	if r.StatusCode != 200 || !strings.Contains(string(b), "<title>Cercle</title>") {
-		t.Fatalf("page : %d", r.StatusCode)
+		t.Fatalf("page: %d", r.StatusCode)
 	}
 	if csp := r.Header.Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'self'") {
-		t.Errorf("CSP absente : %q", csp)
+		t.Errorf("missing CSP: %q", csp)
 	}
 	r = get("/ui/api/status", false)
 	var body map[string]any
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	r.Body.Close()
 	if r.StatusCode != 401 || r.Header.Get("WWW-Authenticate") != "" || body["login"] != true {
-		t.Errorf("API sans connexion : %d, WWW-Authenticate %q, %v", r.StatusCode, r.Header.Get("WWW-Authenticate"), body)
+		t.Errorf("API without login: %d, WWW-Authenticate %q, %v", r.StatusCode, r.Header.Get("WWW-Authenticate"), body)
 	}
 	if r := get("/ui/api/status", true); r.StatusCode != 200 {
-		t.Errorf("API en Basic (scripts) : %d", r.StatusCode)
+		t.Errorf("API with Basic (scripts): %d", r.StatusCode)
 	}
 	for _, f := range []string{"/app.js", "/style.css"} {
 		if r := get(f, false); r.StatusCode != 200 {
-			t.Errorf("%s : %d", f, r.StatusCode)
+			t.Errorf("%s: %d", f, r.StatusCode)
 		}
 	}
 	if r := get("/healthz", false); r.StatusCode != 200 {
-		t.Errorf("healthz : %d", r.StatusCode)
+		t.Errorf("healthz: %d", r.StatusCode)
 	}
 
-	// CSRF : une modification sans l'en-tête est refusée, même authentifiée.
+	// CSRF: a change without the header is refused, even when authenticated.
 	req, _ := http.NewRequest(http.MethodPost, a.srv.URL+"/ui/api/circle", nil)
 	req.SetBasicAuth("x", "secret")
 	resp, _ := http.DefaultClient.Do(req)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
-		t.Errorf("POST sans %s : %d, attendu 403", CSRFHeader, resp.StatusCode)
+		t.Errorf("POST without %s: %d, want 403", CSRFHeader, resp.StatusCode)
 	}
 	if a.n.Membership().InCircle() {
-		t.Fatal("cercle créé malgré le refus")
+		t.Fatal("circle created despite the refusal")
 	}
 }
 
@@ -191,34 +191,34 @@ func TestLoginSession(t *testing.T) {
 		return resp.StatusCode
 	}
 
-	if r := post("/ui/api/login", map[string]any{"password": "faux"}); r.StatusCode != 401 || len(r.Cookies()) != 0 {
-		t.Fatalf("mauvais mot de passe : %d, %d cookies", r.StatusCode, len(r.Cookies()))
+	if r := post("/ui/api/login", map[string]any{"password": "wrong"}); r.StatusCode != 401 || len(r.Cookies()) != 0 {
+		t.Fatalf("wrong password: %d, %d cookies", r.StatusCode, len(r.Cookies()))
 	}
 	r := post("/ui/api/login", map[string]any{"password": "secret", "remember": true})
 	if r.StatusCode != 204 || len(r.Cookies()) != 1 {
-		t.Fatalf("connexion : %d", r.StatusCode)
+		t.Fatalf("login: %d", r.StatusCode)
 	}
 	c := r.Cookies()[0]
 	if !c.HttpOnly || c.SameSite != http.SameSiteStrictMode || c.MaxAge < 29*24*3600 {
-		t.Errorf("cookie : %+v", c)
+		t.Errorf("cookie: %+v", c)
 	}
 	if code := status(c); code != 200 {
-		t.Fatalf("avec le cookie : %d", code)
+		t.Fatalf("with the cookie: %d", code)
 	}
 	forged := *c
-	forged.Value = strings.Replace(c.Value, ".", "9.", 1) // expiration repoussée, signature inchangée
+	forged.Value = strings.Replace(c.Value, ".", "9.", 1) // expiry pushed back, signature unchanged
 	if code := status(&forged); code != 401 {
-		t.Errorf("cookie falsifié : %d", code)
+		t.Errorf("forged cookie: %d", code)
 	}
 	expired := &http.Cookie{Name: sessionCookie, Value: a.ui.sign(time.Now().Add(-time.Minute).Unix())}
 	if code := status(expired); code != 401 {
-		t.Errorf("cookie expiré : %d", code)
+		t.Errorf("expired cookie: %d", code)
 	}
-	// Session navigateur (sans « rester connecté ») : pas de Max-Age.
+	// Browser session (without "stay signed in"): no Max-Age.
 	if r := post("/ui/api/login", map[string]any{"password": "secret"}); r.Cookies()[0].MaxAge != 0 {
-		t.Errorf("session courte persistante : %+v", r.Cookies()[0])
+		t.Errorf("short session is persistent: %+v", r.Cookies()[0])
 	}
-	// Changement de mot de passe : les sessions existantes tombent.
+	// Password change: existing sessions are dropped.
 	other := &Server{Node: a.n, Password: "nouveau"}
 	srv2 := httptest.NewServer(other.Handler())
 	defer srv2.Close()
@@ -227,48 +227,48 @@ func TestLoginSession(t *testing.T) {
 	resp, _ := http.DefaultClient.Do(req)
 	resp.Body.Close()
 	if resp.StatusCode != 401 {
-		t.Errorf("cookie accepté après changement de mot de passe : %d", resp.StatusCode)
+		t.Errorf("cookie accepted after a password change: %d", resp.StatusCode)
 	}
-	// Déconnexion : le cookie est effacé.
+	// Logout: the cookie is cleared.
 	if r := post("/ui/api/logout", nil, c); len(r.Cookies()) != 1 || r.Cookies()[0].MaxAge >= 0 {
-		t.Errorf("déconnexion : %+v", r.Cookies())
+		t.Errorf("logout: %+v", r.Cookies())
 	}
-	// Connexion sans l'en-tête anti-CSRF : refusée.
+	// Login without the anti-CSRF header: refused.
 	b, _ := json.Marshal(map[string]string{"password": "secret"})
 	resp, _ = http.Post(a.srv.URL+"/ui/api/login", "application/json", bytes.NewReader(b))
 	resp.Body.Close()
 	if resp.StatusCode != 403 {
-		t.Errorf("connexion sans %s : %d", CSRFHeader, resp.StatusCode)
+		t.Errorf("login without %s: %d", CSRFHeader, resp.StatusCode)
 	}
 }
 
 func TestFullFlow(t *testing.T) {
-	alice := start(t, "alice", "secret", map[string]string{"films/a.mkv": "AAAA", "films/b.mkv": "BB", "lisez-moi.txt": "salut"})
+	alice := start(t, "alice", "secret", map[string]string{"movies/a.mkv": "AAAA", "movies/b.mkv": "BB", "readme.txt": "hello"})
 	bob := start(t, "bob", "secret", nil)
 
 	var st statusResp
 	if code := alice.call("POST", "/circle", nil, &st); code != 200 || st.Self == nil || st.Self.TunnelIP.String() != "10.42.0.1" {
-		t.Fatalf("création : %d %+v", code, st)
+		t.Fatalf("creation: %d %+v", code, st)
 	}
 	if code := alice.call("POST", "/circle", nil, nil); code != http.StatusConflict {
-		t.Errorf("seconde création : %d", code)
+		t.Errorf("second creation: %d", code)
 	}
 	var inv struct {
 		Code string `json:"code"`
 	}
 	if code := alice.call("POST", "/invites", nil, &inv); code != 201 || !strings.HasPrefix(inv.Code, "cercle1:") {
-		t.Fatalf("invitation : %d", code)
+		t.Fatalf("invitation: %d", code)
 	}
 	if code := bob.call("POST", "/join", map[string]string{"code": inv.Code}, &st); code != 200 || !st.InCircle {
-		t.Fatalf("adhésion : %d %+v", code, st)
+		t.Fatalf("join: %d %+v", code, st)
 	}
 	var e map[string]string
 	if code := bob.call("POST", "/join", map[string]string{"code": inv.Code}, &e); code != http.StatusConflict {
-		t.Errorf("seconde adhésion : %d %v", code, e)
+		t.Errorf("second join: %d %v", code, e)
 	}
 
 	var aliceID string
-	eventually(t, "alice en ligne chez bob", func() bool {
+	eventually(t, "alice online at bob", func() bool {
 		var ms []node.PeerState
 		bob.call("GET", "/members", nil, &ms)
 		for _, m := range ms {
@@ -291,46 +291,46 @@ func TestFullFlow(t *testing.T) {
 		} `json:"entries"`
 	}
 	if code := bob.call("GET", "/members/"+url.PathEscape(aliceID)+"/files?path=", nil, &page); code != 200 || len(page.Entries) != 2 || !page.Entries[0].IsDir || page.Entries[0].Size != 6 {
-		t.Fatalf("navigation : %d %+v", code, page)
+		t.Fatalf("browsing: %d %+v", code, page)
 	}
 	var added map[string]int
-	if code := bob.call("POST", "/queue", map[string]any{"peer": aliceID, "paths": []string{"films", "lisez-moi.txt"}}, &added); code != 200 || added["added"] != 3 {
-		t.Fatalf("mise en file : %d %v", code, added)
+	if code := bob.call("POST", "/queue", map[string]any{"peer": aliceID, "paths": []string{"movies", "readme.txt"}}, &added); code != 200 || added["added"] != 3 {
+		t.Fatalf("queuing: %d %v", code, added)
 	}
-	eventually(t, "téléchargements terminés", func() bool {
+	eventually(t, "downloads finished", func() bool {
 		var q queueResp
 		bob.call("GET", "/queue?status=done", nil, &q)
 		return q.Summary.Count["done"] == 3
 	})
-	got, _ := os.ReadFile(filepath.Join(bob.cfg.DownloadsDir, "alice", "films", "a.mkv"))
+	got, _ := os.ReadFile(filepath.Join(bob.cfg.DownloadsDir, "alice", "movies", "a.mkv"))
 	if string(got) != "AAAA" {
-		t.Fatalf("fichier reçu : %q", got)
+		t.Fatalf("received file: %q", got)
 	}
 	var cleared map[string]int64
 	bob.call("POST", "/queue/actions", map[string]string{"action": "clear_done"}, &cleared)
 	if cleared["removed"] != 3 {
-		t.Errorf("vidage des terminés : %v", cleared)
+		t.Errorf("clearing finished items: %v", cleared)
 	}
 
-	// Réglages : refus champ par champ, puis application à chaud et propagation du nom.
+	// Settings: refused field by field, then applied live and the name propagated.
 	var bad struct {
 		Fields map[string]string `json:"fields"`
 	}
 	s := bob.n.Settings()
-	s.UploadLimit, s.DownloadWindow = "vite", "25:00-01:00"
+	s.UploadLimit, s.DownloadWindow = "fast", "25:00-01:00"
 	if code := bob.call("PUT", "/settings", s, &bad); code != http.StatusUnprocessableEntity || bad.Fields["upload_limit"] == "" || bad.Fields["download_window"] == "" {
-		t.Fatalf("réglages invalides : %d %+v", code, bad)
+		t.Fatalf("invalid settings: %d %+v", code, bad)
 	}
 	s = bob.n.Settings()
 	s.Name, s.UploadLimit, s.MaxUploads, s.DownloadWindow = "bob-nas", "5M", 2, "01:00-07:00"
 	var applied node.Settings
 	if code := bob.call("PUT", "/settings", s, &applied); code != 200 || applied.UploadLimit != "5M" || applied.DownloadWindow != "01:00-07:00" {
-		t.Fatalf("réglages : %d %+v", code, applied)
+		t.Fatalf("settings: %d %+v", code, applied)
 	}
 	if limit, max, _, _ := bob.n.Uploads().Limits(); limit != 5<<20 || max != 2 {
-		t.Errorf("brides non appliquées : %d, %d", limit, max)
+		t.Errorf("limits not applied: %d, %d", limit, max)
 	}
-	eventually(t, "nouveau nom de bob chez alice", func() bool {
+	eventually(t, "bob's new name at alice", func() bool {
 		var ms []node.PeerState
 		alice.call("GET", "/members", nil, &ms)
 		for _, m := range ms {
@@ -343,7 +343,7 @@ func TestFullFlow(t *testing.T) {
 }
 
 func TestShareSelection(t *testing.T) {
-	a := start(t, "alice", "secret", map[string]string{"films/a.mkv": "AAAA", "musique/b.flac": "BB", "photos/c.jpg": "C"})
+	a := start(t, "alice", "secret", map[string]string{"movies/a.mkv": "AAAA", "music/b.flac": "BB", "photos/c.jpg": "C"})
 	if _, err := a.n.Index().Scan(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -357,22 +357,22 @@ func TestShareSelection(t *testing.T) {
 	}
 	var sr shareResp
 	if code := a.call("GET", "/share", nil, &sr); code != 200 || !sr.All || len(sr.Folders) != 3 || sr.Files != 3 {
-		t.Fatalf("partage par défaut : %d %+v", code, sr)
+		t.Fatalf("default share: %d %+v", code, sr)
 	}
 	var e map[string]string
 	if code := a.call("PUT", "/share", map[string]any{"folders": []string{"../etc"}}, &e); code != 400 {
-		t.Errorf("nom piégé : %d %v", code, e)
+		t.Errorf("booby-trapped name: %d %v", code, e)
 	}
-	if code := a.call("PUT", "/share", map[string]any{"all": false, "folders": []string{"films"}}, &sr); code != 200 || sr.All {
-		t.Fatalf("sélection : %d %+v", code, sr)
+	if code := a.call("PUT", "/share", map[string]any{"all": false, "folders": []string{"movies"}}, &sr); code != 200 || sr.All {
+		t.Fatalf("selection: %d %+v", code, sr)
 	}
-	eventually(t, "réindexation", func() bool {
+	eventually(t, "reindexing", func() bool {
 		a.call("GET", "/share", nil, &sr)
 		return sr.Files == 1
 	})
 	for _, f := range sr.Folders {
-		if f.Shared != (f.Name == "films") {
-			t.Errorf("%s : partagé=%v", f.Name, f.Shared)
+		if f.Shared != (f.Name == "movies") {
+			t.Errorf("%s: shared=%v", f.Name, f.Shared)
 		}
 	}
 }
@@ -410,21 +410,21 @@ func TestEventsStream(t *testing.T) {
 			}
 		}
 	}
-	t.Fatalf("événements manquants : %v (%v)", want, sc.Err())
+	t.Fatalf("missing events: %v (%v)", want, sc.Err())
 }
 
 func TestLoadOrCreatePassword(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ui.password")
 	p1, created, err := LoadOrCreatePassword(path)
 	if err != nil || !created || len(p1) != 19 {
-		t.Fatalf("création : %q, %v, %v", p1, created, err)
+		t.Fatalf("creation: %q, %v, %v", p1, created, err)
 	}
 	fi, _ := os.Stat(path)
 	if fi.Mode().Perm() != 0o600 {
-		t.Errorf("droits %v, attendu 0600", fi.Mode().Perm())
+		t.Errorf("mode %v, want 0600", fi.Mode().Perm())
 	}
 	p2, created, err := LoadOrCreatePassword(path)
 	if err != nil || created || p2 != p1 {
-		t.Fatalf("relecture : %q, %v, %v", p2, created, err)
+		t.Fatalf("reading back: %q, %v, %v", p2, created, err)
 	}
 }

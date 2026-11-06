@@ -20,7 +20,7 @@ func TestLoadDefaults(t *testing.T) {
 		c.MaxUploads != 3 || c.DownloadConcurrency != 2 || c.ScanInterval != time.Hour ||
 		c.InviteTTL != 72*time.Hour || c.LogLevel != slog.LevelInfo ||
 		c.TunnelSubnet.String() != "10.42.0.0/24" || c.UploadLimit != 0 || c.UploadWindow != nil {
-		t.Fatalf("valeurs par défaut inattendues : %+v", c)
+		t.Fatalf("unexpected defaults: %+v", c)
 	}
 }
 
@@ -40,7 +40,7 @@ func TestLoadValues(t *testing.T) {
 	if c.WGListenPort != 51821 || len(c.WGPublicEndpoints) != 3 || c.UploadLimit != 20<<20 ||
 		c.UploadWindow.String() != "01:00-07:00" || len(c.ShareExclude) != 2 ||
 		c.LogLevel != slog.LevelDebug || c.TunnelSubnet.String() != "10.77.3.0/24" {
-		t.Fatalf("valeurs inattendues : %+v", c)
+		t.Fatalf("unexpected values: %+v", c)
 	}
 }
 
@@ -55,11 +55,11 @@ func TestLoadErrorsAreAllReported(t *testing.T) {
 		"SCAN_INTERVAL":       "-1h",
 	}))
 	if err == nil {
-		t.Fatal("erreur attendue")
+		t.Fatal("expected an error")
 	}
 	for _, name := range []string{"WG_LISTEN_PORT", "UPLOAD_LIMIT", "UPLOAD_WINDOW", "WG_PUBLIC_ENDPOINTS", "TUNNEL_SUBNET", "MAX_UPLOADS", "SCAN_INTERVAL"} {
 		if !strings.Contains(err.Error(), name) {
-			t.Errorf("l'erreur ne mentionne pas %s : %v", name, err)
+			t.Errorf("error does not mention %s: %v", name, err)
 		}
 	}
 }
@@ -72,12 +72,12 @@ func TestParseRate(t *testing.T) {
 	for in, want := range cases {
 		got, err := ParseRate(in)
 		if err != nil || got != want {
-			t.Errorf("ParseRate(%q) = %d, %v ; attendu %d", in, got, err, want)
+			t.Errorf("ParseRate(%q) = %d, %v; want %d", in, got, err, want)
 		}
 	}
 	for _, in := range []string{"M", "-1M", "10T", "abc", "NaN"} {
 		if _, err := ParseRate(in); err == nil {
-			t.Errorf("ParseRate(%q) : erreur attendue", in)
+			t.Errorf("ParseRate(%q): expected an error", in)
 		}
 	}
 }
@@ -108,25 +108,25 @@ func TestWindow(t *testing.T) {
 	}
 
 	if got := day.NextOpen(at(12, 0)); !got.Equal(time.Date(2026, 11, 5, 1, 0, 0, 0, time.UTC)) {
-		t.Errorf("NextOpen après le créneau = %v", got)
+		t.Errorf("NextOpen after the window = %v", got)
 	}
 	if got := day.NextOpen(at(0, 30)); !got.Equal(at(1, 0)) {
-		t.Errorf("NextOpen avant le créneau = %v", got)
+		t.Errorf("NextOpen before the window = %v", got)
 	}
 	if got := night.NextOpen(at(23, 0)); !got.Equal(at(23, 0)) {
-		t.Errorf("NextOpen dans le créneau = %v", got)
+		t.Errorf("NextOpen inside the window = %v", got)
 	}
 	if got := night.NextOpen(at(7, 0)); !got.Equal(at(22, 0)) {
-		t.Errorf("NextOpen de jour = %v", got)
+		t.Errorf("NextOpen during the day = %v", got)
 	}
 
 	for _, bad := range []string{"01:00", "01:00-01:00", "1h-2h", "24:30-01:00", "aa:00-01:00"} {
 		if _, err := ParseWindow(bad); err == nil {
-			t.Errorf("ParseWindow(%q) : erreur attendue", bad)
+			t.Errorf("ParseWindow(%q): expected an error", bad)
 		}
 	}
 	if _, err := ParseWindow("18:00-24:00"); err != nil {
-		t.Errorf("24:00 doit être accepté comme fin : %v", err)
+		t.Errorf("24:00 must be accepted as an end: %v", err)
 	}
 }
 
@@ -141,11 +141,11 @@ func TestApplySettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	if c.UploadLimit != 20<<20 || c.UploadWindow != nil || c.MaxUploads != 3 || c.NodeName != "alice-nas" {
-		t.Fatalf("après réglages : %+v", c)
+		t.Fatalf("after settings: %+v", c)
 	}
-	stored[SettingMaxUploads] = "zéro"
+	stored[SettingMaxUploads] = "zero"
 	if err := c.ApplySettings(func(k string) (string, bool, error) { v, ok := stored[k]; return v, ok, nil }); err == nil {
-		t.Fatal("réglage invalide accepté")
+		t.Fatal("invalid setting accepted")
 	}
 }
 
@@ -153,7 +153,7 @@ func TestFormatRate(t *testing.T) {
 	for _, s := range []string{"0", "512K", "20M", "1G", "1000"} {
 		n, err := ParseRate(s)
 		if err != nil || FormatRate(n) != s {
-			t.Errorf("aller-retour %q : %q, %v", s, FormatRate(n), err)
+			t.Errorf("round trip %q: %q, %v", s, FormatRate(n), err)
 		}
 	}
 }

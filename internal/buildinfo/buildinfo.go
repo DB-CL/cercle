@@ -1,14 +1,14 @@
-// Package buildinfo expose la version injectée à la compilation par -ldflags.
+// Package buildinfo exposes the version injected at build time with -ldflags.
 package buildinfo
 
-// Valeurs remplacées par -ldflags "-X github.com/DB-CL/cercle/internal/buildinfo.Version=…".
+// Values replaced by -ldflags "-X github.com/DB-CL/cercle/internal/buildinfo.Version=…".
 var (
 	Version = "dev"
-	Commit  = "inconnu"
-	Date    = "inconnue"
+	Commit  = "unknown"
+	Date    = "unknown"
 )
 
-// String renvoie la version lisible, par exemple « 1.2.0 (abc1234, 2026-11-04) ».
+// String returns the readable version, e.g. "1.2.0 (abc1234, 2026-11-04)".
 func String() string {
 	return Version + " (" + Commit + ", " + Date + ")"
 }

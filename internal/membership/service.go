@@ -21,17 +21,17 @@ import (
 	"github.com/DB-CL/cercle/internal/store"
 )
 
-// Identity est l'identité du nœud local.
+// Identity is the local node's identity.
 type Identity struct {
-	NodeID string             // clé publique WireGuard, base64
-	Sign   ed25519.PrivateKey // clé de signature
+	NodeID string             // WireGuard public key, base64
+	Sign   ed25519.PrivateKey // signing key
 }
 
-// Member est la vue d'un membre vérifié.
+// Member is the view of a verified member.
 type Member struct {
 	NodeID      string            `json:"node_id"`
 	Name        string            `json:"name"`
-	DisplayName string            `json:"display_name"` // nom rendu unique dans le cercle
+	DisplayName string            `json:"display_name"` // name made unique within the circle
 	TunnelIP    netip.Addr        `json:"tunnel_ip"`
 	Announced   []string          `json:"announced,omitempty"`
 	Observed    map[string]string `json:"-"`
@@ -42,7 +42,7 @@ type Member struct {
 	Revoked     bool              `json:"revoked"`
 	RevokedBy   string            `json:"revoked_by,omitempty"`
 	Self        bool              `json:"self"`
-	Conflict    bool              `json:"conflict,omitempty"` // adresse perdue au profit d'un membre plus ancien
+	Conflict    bool              `json:"conflict,omitempty"` // address lost to an older member
 }
 
 type revocation struct {
@@ -50,14 +50,14 @@ type revocation struct {
 	rev  Revocation
 }
 
-// Service tient l'état du cercle, en mémoire et en base.
+// Service keeps the circle state, in memory and in the database.
 type Service struct {
 	st  *store.Store
 	id  Identity
 	log *slog.Logger
 	now func() time.Time
 
-	joinMu  sync.Mutex // une adhésion à la fois : un code ne fait entrer qu'un membre
+	joinMu  sync.Mutex // one join at a time: a code admits a single member
 	mu      sync.Mutex
 	circle  string
 	subnet  netip.Prefix
@@ -65,13 +65,13 @@ type Service struct {
 	revoked map[string]revocation
 }
 
-// Erreurs remontées à l'interface.
+// Errors reported to the interface.
 var (
-	ErrNotInCircle     = errors.New("ce nœud n'appartient à aucun cercle")
-	ErrAlreadyInCircle = errors.New("ce nœud appartient déjà à un cercle")
+	ErrNotInCircle     = errors.New("this node does not belong to any circle")
+	ErrAlreadyInCircle = errors.New("this node already belongs to a circle")
 )
 
-// New charge l'état du cercle depuis la base, en revérifiant chaque signature.
+// New loads the circle state from the database, verifying every signature again.
 func New(ctx context.Context, st *store.Store, id Identity, log *slog.Logger) (*Service, error) {
 	if log == nil {
 		log = slog.Default()
@@ -84,27 +84,27 @@ func New(ctx context.Context, st *store.Store, id Identity, log *slog.Logger) (*
 		return s, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("lecture du cercle : %w", err)
+		return nil, fmt.Errorf("reading the circle: %w", err)
 	}
 	if s.subnet, err = netip.ParsePrefix(subnet); err != nil {
-		return nil, fmt.Errorf("sous-réseau du cercle illisible : %w", err)
+		return nil, fmt.Errorf("unreadable circle subnet: %w", err)
 	}
 	var t Table
-	rows, err := st.R.QueryContext(ctx, "SELECT fiche FROM members")
+	rows, err := st.R.QueryContext(ctx, "SELECT record FROM members")
 	if err != nil {
-		return nil, fmt.Errorf("lecture des membres : %w", err)
+		return nil, fmt.Errorf("reading members: %w", err)
 	}
 	for rows.Next() {
 		var raw string
-		var f Fiche
+		var f Record
 		if err := rows.Scan(&raw); err == nil && json.Unmarshal([]byte(raw), &f) == nil {
-			t.Fiches = append(t.Fiches, f)
+			t.Records = append(t.Records, f)
 		}
 	}
 	rows.Close()
 	rows, err = st.R.QueryContext(ctx, "SELECT data FROM revocations")
 	if err != nil {
-		return nil, fmt.Errorf("lecture des révocations : %w", err)
+		return nil, fmt.Errorf("reading revocations: %w", err)
 	}
 	for rows.Next() {
 		var raw string
@@ -116,26 +116,26 @@ func New(ctx context.Context, st *store.Store, id Identity, log *slog.Logger) (*
 	rows.Close()
 	s.members, s.revoked = s.resolve(nil, t)
 	if _, ok := s.members[id.NodeID]; !ok {
-		return nil, errors.New("la fiche de ce nœud est absente ou invalide : base incohérente")
+		return nil, errors.New("this node's record is missing or invalid: inconsistent database")
 	}
 	return s, nil
 }
 
-// InCircle dit si le nœud appartient à un cercle.
+// InCircle reports whether the node belongs to a circle.
 func (s *Service) InCircle() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.circle != ""
 }
 
-// Circle renvoie l'identifiant et le sous-réseau du cercle.
+// Circle returns the circle ID and subnet.
 func (s *Service) Circle() (string, netip.Prefix) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.circle, s.subnet
 }
 
-// Create fonde un cercle : le fondateur prend la première adresse du sous-réseau.
+// Create founds a circle: the founder takes the subnet's first address.
 func (s *Service) Create(ctx context.Context, subnet netip.Prefix, name string, announced []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -155,30 +155,30 @@ func (s *Service) Create(ctx context.Context, subnet netip.Prefix, name string, 
 	if err != nil {
 		return err
 	}
-	f := Fiche{Admission: adm, AdmissionSig: admSig, Body: body, BodySig: bodySig}
+	f := Record{Admission: adm, AdmissionSig: admSig, Body: body, BodySig: bodySig}
 	return s.enterLocked(ctx, circle, subnet.Masked(), f, Table{})
 }
 
-// enterLocked enregistre le cercle et la fiche du nœud, puis fusionne t.
-func (s *Service) enterLocked(ctx context.Context, circle string, subnet netip.Prefix, self Fiche, t Table) error {
-	members, revoked := s.resolveFor(circle, subnet, Table{Fiches: append([]Fiche{self}, t.Fiches...), Revocations: t.Revocations})
+// enterLocked stores the circle and the node's record, then merges t.
+func (s *Service) enterLocked(ctx context.Context, circle string, subnet netip.Prefix, self Record, t Table) error {
+	members, revoked := s.resolveFor(circle, subnet, Table{Records: append([]Record{self}, t.Records...), Revocations: t.Revocations})
 	if _, ok := members[s.id.NodeID]; !ok {
-		return errors.New("fiche d'adhésion invalide (chaîne d'invitations incomplète)")
+		return errors.New("invalid membership record (incomplete invitation chain)")
 	}
 	tx, err := s.st.W.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("enregistrement du cercle : %w", err)
+		return fmt.Errorf("storing the circle: %w", err)
 	}
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx, "INSERT INTO circle (id, circle_id, subnet, created_at) VALUES (1, ?, ?, ?)",
 		circle, subnet.String(), s.now().UnixNano()); err != nil {
-		return fmt.Errorf("enregistrement du cercle : %w", err)
+		return fmt.Errorf("storing the circle: %w", err)
 	}
 	if err := saveTx(ctx, tx, members, revoked); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("enregistrement du cercle : %w", err)
+		return fmt.Errorf("storing the circle: %w", err)
 	}
 	s.circle, s.subnet, s.members, s.revoked = circle, subnet, members, revoked
 	return nil
@@ -186,22 +186,22 @@ func (s *Service) enterLocked(ctx context.Context, circle string, subnet netip.P
 
 func saveTx(ctx context.Context, tx *sql.Tx, members map[string]decoded, revoked map[string]revocation) error {
 	if _, err := tx.ExecContext(ctx, "DELETE FROM members"); err != nil {
-		return fmt.Errorf("enregistrement des membres : %w", err)
+		return fmt.Errorf("storing members: %w", err)
 	}
 	for id, d := range members {
-		raw, _ := json.Marshal(d.fiche)
-		if _, err := tx.ExecContext(ctx, "INSERT INTO members (node_id, fiche, tunnel_ip, version, joined_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+		raw, _ := json.Marshal(d.record)
+		if _, err := tx.ExecContext(ctx, "INSERT INTO members (node_id, record, tunnel_ip, version, joined_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
 			id, string(raw), d.body.TunnelIP.String(), d.body.Version, d.adm.JoinedAt, d.body.UpdatedAt); err != nil {
-			return fmt.Errorf("enregistrement des membres : %w", err)
+			return fmt.Errorf("storing members: %w", err)
 		}
 	}
 	if _, err := tx.ExecContext(ctx, "DELETE FROM revocations"); err != nil {
-		return fmt.Errorf("enregistrement des révocations : %w", err)
+		return fmt.Errorf("storing revocations: %w", err)
 	}
 	for target, r := range revoked {
 		raw, _ := json.Marshal(r.rev)
 		if _, err := tx.ExecContext(ctx, "INSERT INTO revocations (target, data) VALUES (?, ?)", target, string(raw)); err != nil {
-			return fmt.Errorf("enregistrement des révocations : %w", err)
+			return fmt.Errorf("storing revocations: %w", err)
 		}
 	}
 	return nil
@@ -210,24 +210,24 @@ func saveTx(ctx context.Context, tx *sql.Tx, members map[string]decoded, revoked
 func (s *Service) saveLocked(ctx context.Context, members map[string]decoded, revoked map[string]revocation) error {
 	tx, err := s.st.W.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("enregistrement des membres : %w", err)
+		return fmt.Errorf("storing members: %w", err)
 	}
 	defer tx.Rollback()
 	if err := saveTx(ctx, tx, members, revoked); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("enregistrement des membres : %w", err)
+		return fmt.Errorf("storing members: %w", err)
 	}
 	s.members, s.revoked = members, revoked
 	return nil
 }
 
-// resolve valide la table actuelle complétée par t.
+// resolve validates the current table completed with t.
 func (s *Service) resolve(cur map[string]decoded, t Table) (map[string]decoded, map[string]revocation) {
-	all := Table{Fiches: slices.Clone(t.Fiches), Revocations: slices.Clone(t.Revocations)}
+	all := Table{Records: slices.Clone(t.Records), Revocations: slices.Clone(t.Revocations)}
 	for _, d := range cur {
-		all.Fiches = append(all.Fiches, d.fiche)
+		all.Records = append(all.Records, d.record)
 	}
 	for _, r := range s.revoked {
 		all.Revocations = append(all.Revocations, r.rev)
@@ -235,13 +235,13 @@ func (s *Service) resolve(cur map[string]decoded, t Table) (map[string]decoded, 
 	return s.resolveFor(s.circle, s.subnet, all)
 }
 
-// resolveFor ne garde que les fiches dont la chaîne d'admissions remonte au
-// fondateur et dont les signatures sont valides ; pour chaque membre, la plus
-// haute version gagne. Les révocations valides sont absorbantes : une fois
-// révoqué, un membre le reste, quelle que soit la version de sa fiche.
+// resolveFor only keeps records whose admission chain leads back to the
+// founder and whose signatures are valid; for each member, the highest
+// version wins. Valid revocations are absorbing: once revoked, a member stays
+// revoked whatever its record version.
 func (s *Service) resolveFor(circle string, subnet netip.Prefix, t Table) (map[string]decoded, map[string]revocation) {
-	cands := map[string][]Fiche{}
-	for _, f := range t.Fiches {
+	cands := map[string][]Record{}
+	for _, f := range t.Records {
 		var a Admission
 		if json.Unmarshal(f.Admission, &a) == nil && a.NodeID != "" {
 			cands[a.NodeID] = append(cands[a.NodeID], f)
@@ -265,7 +265,7 @@ func (s *Service) resolveFor(circle string, subnet netip.Prefix, t Table) (map[s
 					continue
 				}
 				if subnet.IsValid() && !subnet.Contains(d.body.TunnelIP) {
-					continue // adresse hors du sous-réseau du cercle
+					continue // address outside the circle subnet
 				}
 				if best == nil || d.body.Version > best.body.Version {
 					best = &d
@@ -301,7 +301,7 @@ func sameState(a map[string]decoded, b map[string]decoded, ra, rb map[string]rev
 	}
 	for id, d := range a {
 		o, ok := b[id]
-		if !ok || !bytes.Equal(d.fiche.Body, o.fiche.Body) || !bytes.Equal(d.fiche.Admission, o.fiche.Admission) {
+		if !ok || !bytes.Equal(d.record.Body, o.record.Body) || !bytes.Equal(d.record.Admission, o.record.Admission) {
 			return false
 		}
 	}
@@ -313,7 +313,7 @@ func sameState(a map[string]decoded, b map[string]decoded, ra, rb map[string]rev
 	return true
 }
 
-// Merge fusionne une table reçue. changed dit si l'état local a changé.
+// Merge merges a received table. changed reports whether the local state changed.
 func (s *Service) Merge(ctx context.Context, t Table) (changed bool, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -322,9 +322,9 @@ func (s *Service) Merge(ctx context.Context, t Table) (changed bool, err error) 
 	}
 	mine := s.members[s.id.NodeID]
 	members, revoked := s.resolve(s.members, t)
-	// Ma fiche : c'est moi qui fais foi. Si une version plus haute circule
-	// (base restaurée), je repars au-dessus avec mon contenu actuel.
-	if got, ok := members[s.id.NodeID]; ok && !bytes.Equal(got.fiche.Body, mine.fiche.Body) {
+	// My record: I am the authority. If a higher version circulates (restored
+	// database), I start again above it with my current content.
+	if got, ok := members[s.id.NodeID]; ok && !bytes.Equal(got.record.Body, mine.record.Body) {
 		if got.body.Version >= mine.body.Version {
 			b := mine.body
 			b.Version = got.body.Version + 1
@@ -332,7 +332,7 @@ func (s *Service) Merge(ctx context.Context, t Table) (changed bool, err error) 
 			if err != nil {
 				return false, err
 			}
-			mine.body, mine.fiche.Body, mine.fiche.BodySig = b, raw, sig
+			mine.body, mine.record.Body, mine.record.BodySig = b, raw, sig
 		}
 		members[s.id.NodeID] = mine
 	}
@@ -345,13 +345,13 @@ func (s *Service) Merge(ctx context.Context, t Table) (changed bool, err error) 
 	return true, nil
 }
 
-// Table renvoie la table complète à envoyer par gossip.
+// Table returns the full table to send through gossip.
 func (s *Service) Table() Table {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var t Table
 	for _, d := range s.members {
-		t.Fiches = append(t.Fiches, d.fiche)
+		t.Records = append(t.Records, d.record)
 	}
 	for _, r := range s.revoked {
 		t.Revocations = append(t.Revocations, r.rev)
@@ -359,8 +359,8 @@ func (s *Service) Table() Table {
 	return t
 }
 
-// UpdateSelf modifie le corps de la fiche locale et la re-signe, si fn y
-// change quelque chose. Renvoie vrai si la fiche a changé.
+// UpdateSelf changes the local record body and signs it again, if fn changes
+// anything. Returns true if the record changed.
 func (s *Service) UpdateSelf(ctx context.Context, fn func(b *Body)) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -384,7 +384,7 @@ func (s *Service) UpdateSelf(ctx context.Context, fn func(b *Body)) (bool, error
 	if err != nil {
 		return false, err
 	}
-	mine.body, mine.fiche.Body, mine.fiche.BodySig = b, raw, sig
+	mine.body, mine.record.Body, mine.record.BodySig = b, raw, sig
 	members := maps.Clone(s.members)
 	members[s.id.NodeID] = mine
 	if err := s.saveLocked(ctx, members, s.revoked); err != nil {
@@ -393,7 +393,7 @@ func (s *Service) UpdateSelf(ctx context.Context, fn func(b *Body)) (bool, error
 	return true, nil
 }
 
-// Revoke révoque définitivement un membre.
+// Revoke permanently revokes a member.
 func (s *Service) Revoke(ctx context.Context, target string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -401,10 +401,10 @@ func (s *Service) Revoke(ctx context.Context, target string) error {
 		return ErrNotInCircle
 	}
 	if target == s.id.NodeID {
-		return errors.New("un membre ne peut pas se révoquer lui-même")
+		return errors.New("a member cannot revoke itself")
 	}
 	if _, ok := s.members[target]; !ok {
-		return fmt.Errorf("membre inconnu : %s", target)
+		return fmt.Errorf("unknown member: %s", target)
 	}
 	if _, ok := s.revoked[target]; ok {
 		return nil
@@ -415,14 +415,14 @@ func (s *Service) Revoke(ctx context.Context, target string) error {
 	}
 	members, revoked := s.resolve(s.members, Table{Revocations: []Revocation{{Data: raw, Sig: sig}}})
 	if _, ok := revoked[target]; !ok {
-		return errors.New("révocation refusée")
+		return errors.New("revocation refused")
 	}
 	return s.saveLocked(ctx, members, revoked)
 }
 
-// owners attribue chaque adresse de tunnel : en cas de conflit, le membre
-// entré le plus tôt la garde (puis le plus petit node_id). Les révoqués
-// gardent la leur : une adresse n'est jamais réattribuée.
+// owners assigns every tunnel address: on conflict, the earliest member keeps
+// it (then the smallest node_id). Revoked members keep theirs: an address is
+// never reassigned.
 func ownersLocked(members map[string]decoded) map[netip.Addr]string {
 	ids := slices.Collect(maps.Keys(members))
 	sort.Slice(ids, func(i, j int) bool {
@@ -442,7 +442,7 @@ func ownersLocked(members map[string]decoded) map[netip.Addr]string {
 	return owners
 }
 
-// Members renvoie tous les membres connus, par date d'entrée.
+// Members returns every known member, by join date.
 func (s *Service) Members() []Member {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -478,7 +478,7 @@ func (s *Service) Members() []Member {
 	return out
 }
 
-// Self renvoie la vue du nœud local.
+// Self returns the local node's view.
 func (s *Service) Self() (Member, bool) {
 	for _, m := range s.Members() {
 		if m.Self {
@@ -488,7 +488,7 @@ func (s *Service) Self() (Member, bool) {
 	return Member{}, false
 }
 
-// Member renvoie un membre par son identifiant.
+// Member returns a member by ID.
 func (s *Service) Member(id string) (Member, bool) {
 	for _, m := range s.Members() {
 		if m.NodeID == id {
@@ -498,7 +498,7 @@ func (s *Service) Member(id string) (Member, bool) {
 	return Member{}, false
 }
 
-// ByIP renvoie le membre non révoqué qui possède une adresse de tunnel.
+// ByIP returns the non-revoked member owning a tunnel address.
 func (s *Service) ByIP(ip netip.Addr) (Member, bool) {
 	for _, m := range s.Members() {
 		if m.TunnelIP == ip && !m.Revoked && !m.Conflict {
@@ -508,8 +508,8 @@ func (s *Service) ByIP(ip netip.Addr) (Member, bool) {
 	return Member{}, false
 }
 
-// usedLocked renvoie toutes les adresses prises : membres (même révoqués) et
-// invitations en attente.
+// usedLocked returns every taken address: members (revoked ones included)
+// and pending invitations.
 func (s *Service) usedLocked(ctx context.Context) map[netip.Addr]bool {
 	used := map[netip.Addr]bool{}
 	for _, d := range s.members {
@@ -533,13 +533,12 @@ func (s *Service) usedLocked(ctx context.Context) map[netip.Addr]bool {
 	return used
 }
 
-// randomFree tire une adresse libre au hasard dans le sous-réseau : deux
-// invitations simultanées chez deux membres différents ne tombent presque
-// jamais sur la même.
+// randomFree picks a random free address in the subnet: two simultaneous
+// invitations by two different members almost never get the same one.
 func randomFree(subnet netip.Prefix, used map[netip.Addr]bool) (netip.Addr, error) {
 	base := subnet.Masked().Addr().As4()
 	hostBits := 32 - subnet.Bits()
-	n := uint32(1)<<hostBits - 2 // sans l'adresse de réseau ni de diffusion
+	n := uint32(1)<<hostBits - 2 // without the network and broadcast addresses
 	start := binary.BigEndian.Uint32(base[:])
 	var free []netip.Addr
 	for i := uint32(1); i <= n && len(free) < 4096; i++ {
@@ -551,16 +550,16 @@ func randomFree(subnet netip.Prefix, used map[netip.Addr]bool) (netip.Addr, erro
 		}
 	}
 	if len(free) == 0 {
-		return netip.Addr{}, errors.New("plus aucune adresse libre dans le sous-réseau du cercle")
+		return netip.Addr{}, errors.New("no free address left in the circle subnet")
 	}
 	var r [4]byte
 	_, _ = rand.Read(r[:])
 	return free[binary.BigEndian.Uint32(r[:])%uint32(len(free))], nil
 }
 
-// ResolveConflict vérifie si le nœud local a perdu son adresse au profit d'un
-// membre plus ancien ; si oui, il en prend une libre et republie sa fiche.
-// Renvoie la nouvelle adresse, ou une adresse invalide si rien n'a changé.
+// ResolveConflict checks whether the local node lost its address to an older
+// member; if so, it takes a free one and republishes its record. Returns the
+// new address, or an invalid address if nothing changed.
 func (s *Service) ResolveConflict(ctx context.Context) (netip.Addr, error) {
 	s.mu.Lock()
 	mine, ok := s.members[s.id.NodeID]
@@ -573,7 +572,7 @@ func (s *Service) ResolveConflict(ctx context.Context) (netip.Addr, error) {
 	if err != nil {
 		return netip.Addr{}, err
 	}
-	s.log.Warn("conflit d'adresse : un membre plus ancien garde l'adresse, nouvelle adresse choisie", "old", mine.body.TunnelIP, "new", ip)
+	s.log.Warn("address conflict: an older member keeps the address, new address chosen", "old", mine.body.TunnelIP, "new", ip)
 	if _, err := s.UpdateSelf(ctx, func(b *Body) { b.TunnelIP = ip }); err != nil {
 		return netip.Addr{}, err
 	}

@@ -64,7 +64,7 @@ func must(t *testing.T, err error) {
 
 var subnet = netip.MustParsePrefix("10.42.0.0/24")
 
-// join fait entrer n dans le cercle par inviter, sans réseau.
+// join brings n into the circle through inviter, without network.
 func join(t *testing.T, inviter, n *tnode) Code {
 	t.Helper()
 	ctx := context.Background()
@@ -101,46 +101,46 @@ func TestCreateJoinGossip(t *testing.T) {
 	alice, bob, carol := newNode(t, "alice"), newNode(t, "bob"), newNode(t, "carol")
 	must(t, alice.s.Create(ctx, subnet, "alice", []string{"alice.example:51820"}))
 	if self, _ := alice.s.Self(); self.TunnelIP.String() != "10.42.0.1" {
-		t.Fatalf("fondateur en %v, attendu 10.42.0.1", self.TunnelIP)
+		t.Fatalf("founder at %v, want 10.42.0.1", self.TunnelIP)
 	}
 	if err := alice.s.Create(ctx, subnet, "alice", nil); !errors.Is(err, ErrAlreadyInCircle) {
-		t.Fatalf("seconde création : %v", err)
+		t.Fatalf("second creation: %v", err)
 	}
 
 	join(t, alice, bob)
-	join(t, bob, carol) // carol invitée par bob
+	join(t, bob, carol) // carol invited by bob
 	if len(alice.s.Members()) != 2 {
-		t.Fatalf("alice ne doit pas encore connaître carol : %d membres", len(alice.s.Members()))
+		t.Fatalf("alice must not know carol yet: %d members", len(alice.s.Members()))
 	}
 	gossip(t, bob, alice)
 	m := names(alice.s.Members())
 	if len(m) != 3 || m["carol"].InvitedBy != bob.id.NodeID {
-		t.Fatalf("alice après gossip : %+v", m)
+		t.Fatalf("alice after gossip: %+v", m)
 	}
 	ipSeen := map[netip.Addr]bool{}
 	for _, mm := range m {
 		if ipSeen[mm.TunnelIP] || !subnet.Contains(mm.TunnelIP) {
-			t.Fatalf("adresses en double ou hors sous-réseau : %+v", m)
+			t.Fatalf("duplicate or out-of-subnet addresses: %+v", m)
 		}
 		ipSeen[mm.TunnelIP] = true
 	}
 
-	// Mise à jour par le propriétaire : propagée, version plus haute.
+	// Update by the owner: propagated, higher version.
 	changed, err := carol.s.UpdateSelf(ctx, func(b *Body) { b.Name = "carole" })
 	must(t, err)
 	if !changed {
-		t.Fatal("changement non vu")
+		t.Fatal("change not seen")
 	}
 	gossip(t, carol, bob)
 	gossip(t, bob, alice)
 	if _, ok := names(alice.s.Members())["carole"]; !ok {
-		t.Fatal("renommage non propagé")
+		t.Fatal("rename not propagated")
 	}
 
-	// Persistance : rechargement depuis la base, signatures revérifiées.
+	// Persistence: reload from the database, signatures verified again.
 	alice.open()
 	if len(alice.s.Members()) != 3 {
-		t.Fatalf("après rechargement : %d membres", len(alice.s.Members()))
+		t.Fatalf("after reload: %d members", len(alice.s.Members()))
 	}
 }
 
@@ -151,38 +151,38 @@ func TestForgeryRejected(t *testing.T) {
 	join(t, alice, bob)
 	join(t, alice, mallory)
 
-	// mallory réécrit le corps de bob (autre endpoint, version plus haute) avec sa propre clé.
+	// mallory rewrites bob's body (other endpoint, higher version) with its own key.
 	tab := mallory.s.Table()
-	for i, f := range tab.Fiches {
+	for i, f := range tab.Records {
 		var b Body
 		_ = json.Unmarshal(f.Body, &b)
 		if b.NodeID == bob.id.NodeID {
 			b.Announced = []string{"piege.example:51820"}
 			b.Version += 1000
-			tab.Fiches[i].Body, tab.Fiches[i].BodySig, _ = NewBody(mallory.id.Sign, b)
+			tab.Records[i].Body, tab.Records[i].BodySig, _ = NewBody(mallory.id.Sign, b)
 		}
 	}
-	// Et une fausse fiche admise par un inconnu.
+	// And a fake record admitted by a stranger.
 	_, evil, _ := ed25519.GenerateKey(rand.Reader)
 	adm, admSig, _ := NewAdmission(evil, Admission{Circle: tab.circleOf(t), NodeID: "intrus", SignPub: evil.Public().(ed25519.PublicKey), InvitedBy: "personne"})
 	body, bodySig, _ := NewBody(evil, Body{Circle: tab.circleOf(t), NodeID: "intrus", Name: "intrus", TunnelIP: netip.MustParseAddr("10.42.0.200"), Version: 1})
-	tab.Fiches = append(tab.Fiches, Fiche{Admission: adm, AdmissionSig: admSig, Body: body, BodySig: bodySig})
+	tab.Records = append(tab.Records, Record{Admission: adm, AdmissionSig: admSig, Body: body, BodySig: bodySig})
 
 	_, err := alice.s.Merge(ctx, tab)
 	must(t, err)
 	m := names(alice.s.Members())
 	if len(m["bob"].Announced) != 0 {
-		t.Errorf("fiche de bob falsifiée acceptée : %+v", m["bob"])
+		t.Errorf("forged record of bob accepted: %+v", m["bob"])
 	}
 	if _, ok := m["intrus"]; ok {
-		t.Error("membre sans chaîne d'admission accepté")
+		t.Error("member without admission chain accepted")
 	}
 }
 
 func (tab Table) circleOf(t *testing.T) string {
 	var a Admission
-	if len(tab.Fiches) == 0 || json.Unmarshal(tab.Fiches[0].Admission, &a) != nil {
-		t.Fatal("table vide")
+	if len(tab.Records) == 0 || json.Unmarshal(tab.Records[0].Admission, &a) != nil {
+		t.Fatal("empty table")
 	}
 	return a.Circle
 }
@@ -198,29 +198,29 @@ func TestRevocationIsFinal(t *testing.T) {
 
 	must(t, bob.s.Revoke(ctx, carol.id.NodeID))
 	if err := bob.s.Revoke(ctx, bob.id.NodeID); err == nil {
-		t.Error("auto-révocation acceptée")
+		t.Error("self-revocation accepted")
 	}
 	gossip(t, bob, alice)
 	if m := names(alice.s.Members()); !m["carol"].Revoked || m["carol"].RevokedBy != bob.id.NodeID {
-		t.Fatalf("révocation non propagée : %+v", m["carol"])
+		t.Fatalf("revocation not propagated: %+v", m["carol"])
 	}
 	if _, ok := alice.s.ByIP(names(alice.s.Members())["carol"].TunnelIP); ok {
-		t.Error("un révoqué est encore reconnu par son adresse")
+		t.Error("a revoked member is still recognized by its address")
 	}
 
-	// carol, qui n'a rien vu, publie une fiche plus récente : elle reste révoquée.
+	// carol, who saw nothing, publishes a newer record: it stays revoked.
 	_, err := carol.s.UpdateSelf(ctx, func(b *Body) { b.Name = "carol-bis" })
 	must(t, err)
 	_, err = alice.s.Merge(ctx, carol.s.Table())
 	must(t, err)
 	if m := names(alice.s.Members()); !m["carol-bis"].Revoked {
-		t.Fatalf("une version plus haute a annulé la révocation : %+v", m)
+		t.Fatalf("a higher version cancelled the revocation: %+v", m)
 	}
 
-	// Rechargement : toujours révoquée.
+	// Reload: still revoked.
 	alice.open()
 	if m := names(alice.s.Members()); !m["carol-bis"].Revoked {
-		t.Fatal("révocation perdue au redémarrage")
+		t.Fatal("revocation lost on restart")
 	}
 }
 
@@ -229,59 +229,59 @@ func TestInviteRules(t *testing.T) {
 	alice, bob, carol := newNode(t, "alice"), newNode(t, "bob"), newNode(t, "carol")
 	must(t, alice.s.Create(ctx, subnet, "alice", nil))
 	if _, _, err := alice.s.NewInvite(ctx, time.Hour, nil, "k", "p"); err == nil {
-		t.Error("invitation sans endpoint acceptée")
+		t.Error("invitation without endpoint accepted")
 	}
 
 	code, _, err := alice.s.NewInvite(ctx, time.Hour, []string{"h:1"}, randID(), randID())
 	must(t, err)
 	if code.Assigned == code.TempIP || code.Assigned == netip.MustParseAddr("10.42.0.1") {
-		t.Fatalf("adresses de l'invitation : %v et %v", code.Assigned, code.TempIP)
+		t.Fatalf("invitation addresses: %v and %v", code.Assigned, code.TempIP)
 	}
 	req, _ := bob.s.PrepareJoin(code, "bob", nil)
 	resp1, err := alice.s.AcceptJoin(ctx, code.TempIP, req)
 	must(t, err)
-	// Réponse perdue : bob réessaie, même réponse.
+	// Lost response: bob retries, same response.
 	resp2, err := alice.s.AcceptJoin(ctx, code.TempIP, req)
 	if err != nil || string(resp1.Admission) != string(resp2.Admission) {
-		t.Fatalf("nouvel essai de bob : %v", err)
+		t.Fatalf("bob's retry: %v", err)
 	}
-	// carol essaie le même code.
+	// carol tries the same code.
 	reqC, _ := carol.s.PrepareJoin(code, "carol", nil)
 	if _, err := alice.s.AcceptJoin(ctx, code.TempIP, reqC); !errors.Is(err, ErrInviteUsed) {
-		t.Fatalf("code réutilisé : %v", err)
+		t.Fatalf("reused code: %v", err)
 	}
-	// Mauvais jeton.
+	// Wrong token.
 	code2, _, _ := alice.s.NewInvite(ctx, time.Hour, []string{"h:1"}, randID(), randID())
 	reqC, _ = carol.s.PrepareJoin(code2, "carol", nil)
-	reqC.Token = "faux"
+	reqC.Token = "wrong"
 	if _, err := alice.s.AcceptJoin(ctx, code2.TempIP, reqC); !errors.Is(err, ErrInviteUnknown) {
-		t.Fatalf("mauvais jeton : %v", err)
+		t.Fatalf("wrong token: %v", err)
 	}
-	// Expiré.
+	// Expired.
 	code3, _, _ := alice.s.NewInvite(ctx, time.Hour, []string{"h:1"}, randID(), randID())
 	reqC, _ = carol.s.PrepareJoin(code3, "carol", nil)
 	alice.s.now = func() time.Time { return time.Now().Add(2 * time.Hour) }
 	if _, err := alice.s.AcceptJoin(ctx, code3.TempIP, reqC); !errors.Is(err, ErrInviteExpired) {
-		t.Fatalf("code expiré : %v", err)
+		t.Fatalf("expired code: %v", err)
 	}
 	carol.s.now = alice.s.now
 	if _, err := carol.s.PrepareJoin(code3, "carol", nil); !errors.Is(err, ErrInviteExpired) {
-		t.Fatalf("code expiré côté invité : %v", err)
+		t.Fatalf("expired code on the invitee side: %v", err)
 	}
 	alice.s.now = time.Now
-	// Annulation.
+	// Cancellation.
 	code4, inv4, _ := alice.s.NewInvite(ctx, time.Hour, []string{"h:1"}, randID(), randID())
 	must(t, alice.s.CancelInvite(ctx, inv4.ID))
 	carol.s.now = time.Now
 	reqC, _ = carol.s.PrepareJoin(code4, "carol", nil)
 	if _, err := alice.s.AcceptJoin(ctx, code4.TempIP, reqC); !errors.Is(err, ErrInviteUnknown) {
-		t.Fatalf("code annulé : %v", err)
+		t.Fatalf("cancelled code: %v", err)
 	}
 	if _, err := ParseCode("cercle1:abc"); !errors.Is(err, ErrBadCode) {
-		t.Fatalf("code tronqué : %v", err)
+		t.Fatalf("truncated code: %v", err)
 	}
 	if _, err := ParseCode("  " + code.Encode()[:20] + "\n" + code.Encode()[20:] + " "); err != nil {
-		t.Fatalf("code coupé par une messagerie : %v", err)
+		t.Fatalf("code split by a messaging app: %v", err)
 	}
 }
 
@@ -293,7 +293,7 @@ func TestAddressConflict(t *testing.T) {
 	gossip(t, alice, bob)
 	join(t, alice, carol)
 	join(t, bob, dave)
-	// Forçage du conflit : dave prend l'adresse de carol (entrée avant lui).
+	// Forcing the conflict: dave takes carol's address (carol joined first).
 	carolIP := names(alice.s.Members())["carol"].TunnelIP
 	_, err := dave.s.UpdateSelf(ctx, func(b *Body) { b.TunnelIP = carolIP })
 	must(t, err)
@@ -301,23 +301,23 @@ func TestAddressConflict(t *testing.T) {
 	gossip(t, bob, alice)
 	m := names(alice.s.Members())
 	if m["carol"].Conflict || !m["dave"].Conflict {
-		t.Fatalf("arbitrage : carol %v, dave %v ; le plus ancien doit garder l'adresse", m["carol"].Conflict, m["dave"].Conflict)
+		t.Fatalf("arbitration: carol %v, dave %v; the oldest must keep the address", m["carol"].Conflict, m["dave"].Conflict)
 	}
 	if owner, ok := alice.s.ByIP(carolIP); !ok || owner.Name != "carol" {
-		t.Fatalf("propriétaire de %v : %+v", carolIP, owner)
+		t.Fatalf("owner of %v: %+v", carolIP, owner)
 	}
 	gossip(t, alice, dave)
 	newIP, err := dave.s.ResolveConflict(ctx)
 	must(t, err)
 	if !newIP.IsValid() || newIP == carolIP {
-		t.Fatalf("dave n'a pas changé d'adresse : %v", newIP)
+		t.Fatalf("dave did not change address: %v", newIP)
 	}
 	gossip(t, dave, alice)
 	if m := names(alice.s.Members()); m["dave"].Conflict || m["dave"].TunnelIP != newIP {
-		t.Fatalf("après résolution : %+v", m["dave"])
+		t.Fatalf("after resolution: %+v", m["dave"])
 	}
 	if ip, _ := alice.s.ResolveConflict(ctx); ip.IsValid() {
-		t.Fatal("alice n'avait pas de conflit")
+		t.Fatal("alice had no conflict")
 	}
 }
 
@@ -330,7 +330,7 @@ func TestDuplicateNames(t *testing.T) {
 	seen := map[string]bool{}
 	for _, m := range alice.s.Members() {
 		if seen[m.DisplayName] {
-			t.Fatalf("nom affiché en double : %q", m.DisplayName)
+			t.Fatalf("duplicate display name: %q", m.DisplayName)
 		}
 		seen[m.DisplayName] = true
 	}
@@ -345,27 +345,27 @@ func TestOversizedOrOutOfSubnetFicheRejected(t *testing.T) {
 
 	forge := func(mut func(*Body)) Table {
 		tab := mallory.s.Table()
-		for i, f := range tab.Fiches {
+		for i, f := range tab.Records {
 			var b Body
 			_ = json.Unmarshal(f.Body, &b)
 			if b.NodeID == mallory.id.NodeID {
 				mut(&b)
 				b.Version += 10
-				tab.Fiches[i].Body, tab.Fiches[i].BodySig, _ = NewBody(mallory.id.Sign, b)
+				tab.Records[i].Body, tab.Records[i].BodySig, _ = NewBody(mallory.id.Sign, b)
 			}
 		}
 		return tab
 	}
 	for name, mut := range map[string]func(*Body){
-		"nom démesuré":       func(b *Body) { b.Name = strings.Repeat("x", 5000) },
-		"hors sous-réseau":   func(b *Body) { b.TunnelIP = netip.MustParseAddr("192.168.1.1") },
-		"endpoints en masse": func(b *Body) { b.Announced = make([]string, 100) },
+		"oversized name": func(b *Body) { b.Name = strings.Repeat("x", 5000) },
+		"outside subnet": func(b *Body) { b.TunnelIP = netip.MustParseAddr("192.168.1.1") },
+		"mass endpoints": func(b *Body) { b.Announced = make([]string, 100) },
 	} {
 		_, err := alice.s.Merge(ctx, forge(mut))
 		must(t, err)
 		m, _ := alice.s.Member(mallory.id.NodeID)
 		if m.Name != "mallory" || m.TunnelIP.String() == "192.168.1.1" || len(m.Announced) > 8 {
-			t.Errorf("%s : fiche acceptée (%q, %v, %d endpoints)", name, m.Name, m.TunnelIP, len(m.Announced))
+			t.Errorf("%s: record accepted (%q, %v, %d endpoints)", name, m.Name, m.TunnelIP, len(m.Announced))
 		}
 	}
 	if got := CleanName("  bob\x00\n" + strings.Repeat("é", 100)); utf8.RuneCountInString(got) != 64 || strings.ContainsAny(got, "\x00\n") {

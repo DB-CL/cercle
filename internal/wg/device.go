@@ -20,69 +20,69 @@ import (
 	"golang.zx2c4.com/wireguard/tun/netstack"
 )
 
-// DefaultMTU laisse la place aux en-têtes WireGuard sur un lien Ethernet ou IPv6.
+// DefaultMTU leaves room for WireGuard headers on an Ethernet or IPv6 link.
 const DefaultMTU = 1420
 
-// KeepaliveInterval maintient les associations NAT ouvertes (secondes).
+// KeepaliveInterval keeps NAT mappings open (seconds).
 const KeepaliveInterval = 25
 
-// handshakeFresh : en deçà, la session est vivante et l'endpoint appris par
-// roaming ne doit pas être écrasé. WireGuard renouvelle la poignée de main
-// toutes les 2 minutes sur un lien actif ; keepalive à 25 s compris, une
-// session saine n'a jamais plus de 2 min 45.
+// handshakeFresh: below this age the session is alive and the endpoint learned
+// by roaming must not be overwritten. WireGuard renews the handshake every
+// 2 minutes on an active link; with a 25 s keepalive, a healthy session is
+// never older than 2 min 45 s.
 const handshakeFresh = 3 * time.Minute
 
-// Options configure un Device.
+// Options configures a Device.
 type Options struct {
 	PrivateKey Key
-	ListenPort int        // 0 = port UDP choisi par le système
-	Address    netip.Addr // adresse de tunnel du nœud
+	ListenPort int        // 0 = UDP port chosen by the system
+	Address    netip.Addr // node tunnel address
 	MTU        int        // 0 = DefaultMTU
 	Logger     *slog.Logger
 
-	// upstreamNetstack force le netstack d'origine de wireguard-go (comparaison au banc).
+	// upstreamNetstack forces wireguard-go's original netstack (bench comparison).
 	upstreamNetstack bool
 }
 
-// Peer est l'état voulu d'un pair.
+// Peer is the desired state of a peer.
 type Peer struct {
 	PublicKey Key
-	TunnelIP  netip.Addr     // allowed_ip en /32
-	Endpoint  netip.AddrPort // facultatif ; invalide = inconnu
+	TunnelIP  netip.Addr     // allowed_ip as /32
+	Endpoint  netip.AddrPort // optional; invalid = unknown
 }
 
-// PeerStatus est l'état observé d'un pair.
+// PeerStatus is the observed state of a peer.
 type PeerStatus struct {
 	PublicKey     Key
-	Endpoint      netip.AddrPort // endpoint réel, appris par roaming le cas échéant
-	LastHandshake time.Time      // zéro = jamais
+	Endpoint      netip.AddrPort // actual endpoint, learned by roaming if applicable
+	LastHandshake time.Time      // zero = never
 	RxBytes       uint64
 	TxBytes       uint64
 	AllowedIPs    []netip.Prefix
 }
 
-// Online dit si la session avec ce pair est vivante.
+// Online reports whether the session with this peer is alive.
 func (s PeerStatus) Online(now time.Time) bool {
 	return !s.LastHandshake.IsZero() && now.Sub(s.LastHandshake) < handshakeFresh
 }
 
-// Device est une interface WireGuard embarquée avec sa pile TCP/IP.
+// Device is an embedded WireGuard interface with its TCP/IP stack.
 type Device struct {
 	dev    *device.Device
 	listen func(port uint16) (net.Listener, error)
 	dial   func(ctx context.Context, to netip.AddrPort) (net.Conn, error)
 	addr   netip.Addr
 	log    *slog.Logger
-	mu     sync.Mutex // sérialise les réconciliations
+	mu     sync.Mutex // serializes reconciliations
 }
 
-// New démarre WireGuard. Aucun pair n'est configuré : voir SetPeers.
+// New starts WireGuard. No peer is configured: see SetPeers.
 func New(opts Options) (*Device, error) {
 	if !opts.Address.IsValid() {
-		return nil, errors.New("adresse de tunnel manquante")
+		return nil, errors.New("missing tunnel address")
 	}
 	if opts.PrivateKey.IsZero() {
-		return nil, errors.New("clé privée manquante")
+		return nil, errors.New("missing private key")
 	}
 	if opts.MTU == 0 {
 		opts.MTU = DefaultMTU
@@ -98,7 +98,7 @@ func New(opts Options) (*Device, error) {
 	if opts.upstreamNetstack {
 		td, tnet, err := netstack.CreateNetTUN([]netip.Addr{opts.Address}, nil, opts.MTU)
 		if err != nil {
-			return nil, fmt.Errorf("création du netstack : %w", err)
+			return nil, fmt.Errorf("creating the netstack: %w", err)
 		}
 		tdev = td
 		d.listen = func(port uint16) (net.Listener, error) {
@@ -110,7 +110,7 @@ func New(opts Options) (*Device, error) {
 	} else {
 		nt, err := newNetTUN(opts.Address, opts.MTU)
 		if err != nil {
-			return nil, fmt.Errorf("création du netstack : %w", err)
+			return nil, fmt.Errorf("creating the netstack: %w", err)
 		}
 		tdev, d.listen, d.dial = nt, nt.listenTCP, nt.dialTCP
 	}
@@ -118,7 +118,7 @@ func New(opts Options) (*Device, error) {
 		Verbosef: func(format string, args ...any) { log.Debug(fmt.Sprintf(format, args...)) },
 		Errorf: func(format string, args ...any) {
 			msg := fmt.Sprintf(format, args...)
-			// Normal pour une clé d'invitation en attente ou un pair pas encore localisé.
+			// Expected for a pending invitation key or a peer not located yet.
 			if strings.Contains(msg, "no known endpoint") {
 				log.Debug(msg)
 				return
@@ -130,72 +130,72 @@ func New(opts Options) (*Device, error) {
 	conf := fmt.Sprintf("private_key=%s\nlisten_port=%d\n", opts.PrivateKey.Hex(), opts.ListenPort)
 	if err := dev.IpcSet(conf); err != nil {
 		dev.Close()
-		return nil, fmt.Errorf("configuration de WireGuard : %w", err)
+		return nil, fmt.Errorf("configuring WireGuard: %w", err)
 	}
 	if err := dev.Up(); err != nil {
 		dev.Close()
-		return nil, fmt.Errorf("démarrage de WireGuard (port UDP %d) : %w", opts.ListenPort, err)
+		return nil, fmt.Errorf("starting WireGuard (UDP port %d): %w", opts.ListenPort, err)
 	}
 	d.dev = dev
 	return d, nil
 }
 
-// Address renvoie l'adresse de tunnel du nœud.
+// Address returns the node's tunnel address.
 func (d *Device) Address() netip.Addr { return d.addr }
 
-// Listen ouvre un port TCP sur l'adresse de tunnel, dans le netstack uniquement :
-// rien n'est lié à une interface de l'hôte.
+// Listen opens a TCP port on the tunnel address, inside the netstack only:
+// nothing is bound to a host interface.
 func (d *Device) Listen(port int) (net.Listener, error) {
 	l, err := d.listen(uint16(port))
 	if err != nil {
-		return nil, fmt.Errorf("écoute sur %s:%d dans le tunnel : %w", d.addr, port, err)
+		return nil, fmt.Errorf("listening on %s:%d in the tunnel: %w", d.addr, port, err)
 	}
 	return l, nil
 }
 
-// DialContext ouvre une connexion TCP à travers le tunnel. L'adresse est une
-// IP littérale suivie du port : le tunnel n'a pas de DNS.
+// DialContext opens a TCP connection through the tunnel. The address is a
+// literal IP and port: the tunnel has no DNS.
 func (d *Device) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	if network != "tcp" && network != "tcp4" {
-		return nil, fmt.Errorf("réseau %q non géré dans le tunnel", network)
+		return nil, fmt.Errorf("network %q not supported in the tunnel", network)
 	}
 	to, err := netip.ParseAddrPort(address)
 	if err != nil {
-		return nil, fmt.Errorf("adresse de tunnel invalide %q : %w", address, err)
+		return nil, fmt.Errorf("invalid tunnel address %q: %w", address, err)
 	}
 	return d.dial(ctx, to)
 }
 
-// Close arrête WireGuard et libère le port UDP.
+// Close stops WireGuard and releases the UDP port.
 func (d *Device) Close() { d.dev.Close() }
 
-// ListenPort renvoie le port UDP réellement utilisé.
+// ListenPort returns the UDP port actually in use.
 func (d *Device) ListenPort() (int, error) {
 	raw, err := d.dev.IpcGet()
 	if err != nil {
-		return 0, fmt.Errorf("lecture de l'état WireGuard : %w", err)
+		return 0, fmt.Errorf("reading WireGuard state: %w", err)
 	}
 	for _, line := range strings.Split(raw, "\n") {
 		if v, ok := strings.CutPrefix(line, "listen_port="); ok {
 			return strconv.Atoi(v)
 		}
 	}
-	return 0, errors.New("port d'écoute inconnu")
+	return 0, errors.New("unknown listen port")
 }
 
-// SetPrivateKey change la clé du nœud à chaud (bascule après une invitation).
+// SetPrivateKey changes the node key live (switch after an invitation).
 func (d *Device) SetPrivateKey(k Key) error {
 	if err := d.dev.IpcSet("private_key=" + k.Hex() + "\n"); err != nil {
-		return fmt.Errorf("changement de clé : %w", err)
+		return fmt.Errorf("changing the key: %w", err)
 	}
 	return nil
 }
 
-// Peers renvoie l'état observé de tous les pairs, triés par clé.
+// Peers returns the observed state of every peer, sorted by key.
 func (d *Device) Peers() ([]PeerStatus, error) {
 	raw, err := d.dev.IpcGet()
 	if err != nil {
-		return nil, fmt.Errorf("lecture de l'état WireGuard : %w", err)
+		return nil, fmt.Errorf("reading WireGuard state: %w", err)
 	}
 	return parseIpcGet(raw)
 }
@@ -230,7 +230,7 @@ func parseIpcGet(raw string) ([]PeerStatus, error) {
 			continue
 		}
 		if cur == nil {
-			continue // lignes propres au device
+			continue // device-level lines
 		}
 		switch key {
 		case "endpoint":
@@ -256,13 +256,12 @@ func parseIpcGet(raw string) ([]PeerStatus, error) {
 	return peers, sc.Err()
 }
 
-// SetPeers réconcilie WireGuard avec la liste voulue : ajoute, met à jour,
-// retire, sans redémarrage.
+// SetPeers reconciles WireGuard with the desired list: adds, updates and
+// removes peers without restarting.
 //
-// L'endpoint voulu n'est appliqué que si le pair est nouveau ou si sa session
-// est morte. Une session vivante garde l'endpoint appris par roaming : c'est
-// souvent le seul qui marche pour un pair derrière NAT, et l'écraser toutes les
-// 30 s couperait le lien.
+// The desired endpoint is only applied to a new peer or a dead session. A live
+// session keeps the endpoint learned by roaming: it is often the only one that
+// works for a peer behind NAT, and overwriting it every 30 s would cut the link.
 func (d *Device) SetPeers(peers []Peer) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -281,10 +280,10 @@ func (d *Device) SetPeers(peers []Peer) error {
 	want := make(map[Key]bool, len(peers))
 	for _, p := range peers {
 		if p.PublicKey.IsZero() || !p.TunnelIP.Is4() {
-			return fmt.Errorf("pair invalide : clé %q, adresse %v", p.PublicKey, p.TunnelIP)
+			return fmt.Errorf("invalid peer: key %q, address %v", p.PublicKey, p.TunnelIP)
 		}
 		if want[p.PublicKey] {
-			return fmt.Errorf("pair en double : %s", p.PublicKey)
+			return fmt.Errorf("duplicate peer: %s", p.PublicKey)
 		}
 		want[p.PublicKey] = true
 		fmt.Fprintf(&b, "public_key=%s\nreplace_allowed_ips=true\nallowed_ip=%s/32\npersistent_keepalive_interval=%d\n",
@@ -303,7 +302,7 @@ func (d *Device) SetPeers(peers []Peer) error {
 		return nil
 	}
 	if err := d.dev.IpcSet(b.String()); err != nil {
-		return fmt.Errorf("réconciliation des pairs : %w", err)
+		return fmt.Errorf("reconciling peers: %w", err)
 	}
 	return nil
 }

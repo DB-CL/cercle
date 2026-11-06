@@ -1,10 +1,10 @@
-// Package ui sert l'interface locale (côté LAN, jamais dans le tunnel) : une
-// page unique embarquée et son API JSON sous /ui/api.
+// Package ui serves the local interface (LAN side, never in the tunnel): a
+// single embedded page and its JSON API under /ui/api.
 //
-// Protection CSRF : toute requête qui modifie quelque chose doit porter
-// l'en-tête X-Cercle-UI. Un autre site ne peut pas l'ajouter sans requête de
-// contrôle préalable (CORS), à laquelle l'interface ne répond pas : il ne peut
-// donc pas profiter du mot de passe mémorisé par le navigateur.
+// CSRF protection: every request that changes something must carry the
+// X-Cercle-UI header. Another site cannot add it without a CORS preflight,
+// which the interface does not answer: it therefore cannot take advantage of
+// the password remembered by the browser.
 package ui
 
 import (
@@ -28,16 +28,16 @@ import (
 	"github.com/DB-CL/cercle/web"
 )
 
-// Server est l'interface locale d'un nœud.
+// Server is a node's local interface.
 type Server struct {
 	Node     *node.Node
-	Password string // vide = pas d'authentification (avertissement au démarrage)
+	Password string // empty = no authentication (warning at startup)
 	Logger   *slog.Logger
 
 	authState authState
 }
 
-// Handler renvoie le routeur de l'interface.
+// Handler returns the interface router.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /ui/api/login", s.login)
@@ -68,7 +68,7 @@ func (s *Server) Handler() http.Handler {
 	return s.headers(s.auth(s.csrf(mux)))
 }
 
-// headers ajoute les en-têtes de sécurité : pas de script externe, pas d'iframe.
+// headers adds the security headers: no external script, no iframe.
 func (s *Server) headers(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
@@ -80,7 +80,7 @@ func (s *Server) headers(next http.Handler) http.Handler {
 	})
 }
 
-// CSRFHeader doit accompagner toute requête qui modifie l'état.
+// CSRFHeader must come with every request that changes state.
 const CSRFHeader = "X-Cercle-UI"
 
 func (s *Server) csrf(next http.Handler) http.Handler {
@@ -89,7 +89,7 @@ func (s *Server) csrf(next http.Handler) http.Handler {
 		case http.MethodGet, http.MethodHead:
 		default:
 			if r.Header.Get(CSRFHeader) == "" {
-				writeError(w, http.StatusForbidden, "en-tête "+CSRFHeader+" manquant")
+				writeError(w, http.StatusForbidden, "missing "+CSRFHeader+" header")
 				return
 			}
 		}
@@ -97,7 +97,7 @@ func (s *Server) csrf(next http.Handler) http.Handler {
 	})
 }
 
-// Serve sert l'interface sur addr jusqu'à l'annulation de ctx.
+// Serve serves the interface on addr until ctx is cancelled.
 func (s *Server) Serve(ctx context.Context, addr string) error {
 	l, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -159,7 +159,7 @@ func (s *Server) join(w http.ResponseWriter, r *http.Request) {
 		Code string `json:"code"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "corps illisible : {\"code\": \"cercle1:…\"} attendu")
+		writeError(w, http.StatusBadRequest, "unreadable body: expected {\"code\": \"cercle1:…\"}")
 		return
 	}
 	if err := s.Node.Join(r.Context(), req.Code); err != nil {
@@ -199,7 +199,7 @@ func (s *Server) createInvite(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	// Le code n'est renvoyé qu'ici, à sa création : il n'est stocké nulle part.
+	// The code is only returned here, on creation: it is stored nowhere.
 	writeJSON(w, http.StatusCreated, struct {
 		membership.Invite
 		Code string `json:"code"`
@@ -259,7 +259,7 @@ func (s *Server) enqueue(w http.ResponseWriter, r *http.Request) {
 		Paths []string `json:"paths"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil || req.Peer == "" || len(req.Paths) == 0 {
-		writeError(w, http.StatusBadRequest, "corps attendu : {\"peer\": \"<node_id>\", \"paths\": [\"…\"]}")
+		writeError(w, http.StatusBadRequest, "expected body: {\"peer\": \"<node_id>\", \"paths\": [\"…\"]}")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
@@ -272,7 +272,7 @@ func (s *Server) enqueue(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]int{"added": added, "skipped": skipped})
 }
 
-// applyAction applique une action à un élément de la file.
+// applyAction applies an action to a queue item.
 func (s *Server) applyAction(ctx context.Context, id int64, action string, deletePart bool) error {
 	q := s.Node.Queue()
 	switch action {
@@ -287,7 +287,7 @@ func (s *Server) applyAction(ctx context.Context, id int64, action string, delet
 	case "remove":
 		return q.Remove(ctx, id, deletePart)
 	}
-	return fmt.Errorf("action inconnue %q (pause, resume, priority, retry, remove)", action)
+	return fmt.Errorf("unknown action %q (pause, resume, priority, retry, remove)", action)
 }
 
 func (s *Server) queueAction(w http.ResponseWriter, r *http.Request) {
@@ -296,7 +296,7 @@ func (s *Server) queueAction(w http.ResponseWriter, r *http.Request) {
 		Action string `json:"action"`
 	}
 	if err != nil || json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req) != nil {
-		writeError(w, http.StatusBadRequest, "corps attendu : {\"action\": \"pause\"}")
+		writeError(w, http.StatusBadRequest, "expected body: {\"action\": \"pause\"}")
 		return
 	}
 	if err := s.applyAction(r.Context(), id, req.Action, false); err != nil {
@@ -309,7 +309,7 @@ func (s *Server) queueAction(w http.ResponseWriter, r *http.Request) {
 func (s *Server) queueRemove(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "identifiant invalide")
+		writeError(w, http.StatusBadRequest, "invalid ID")
 		return
 	}
 	if err := s.Node.Queue().Remove(r.Context(), id, r.URL.Query().Get("part") == "1"); err != nil {
@@ -319,7 +319,7 @@ func (s *Server) queueRemove(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// queueActions applique une action à une sélection, ou vide les terminés.
+// queueActions applies an action to a selection, or clears finished items.
 func (s *Server) queueActions(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		IDs        []int64 `json:"ids"`
@@ -327,7 +327,7 @@ func (s *Server) queueActions(w http.ResponseWriter, r *http.Request) {
 		DeletePart bool    `json:"delete_part"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "corps illisible")
+		writeError(w, http.StatusBadRequest, "unreadable body")
 		return
 	}
 	if req.Action == "clear_done" {
@@ -355,13 +355,13 @@ func (s *Server) settings(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	var req node.Settings
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "corps illisible")
+		writeError(w, http.StatusBadRequest, "unreadable body")
 		return
 	}
 	if err := s.Node.SetSettings(r.Context(), req); err != nil {
 		var se node.SettingsError
 		if errors.As(err, &se) {
-			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": "réglages invalides", "fields": se})
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": "invalid settings", "fields": se})
 			return
 		}
 		s.fail(w, err)
@@ -391,11 +391,11 @@ func (s *Server) share(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// putShare choisit ce qui est partagé au premier niveau de /share, puis relance l'indexation.
+// putShare chooses what is shared at the top level of /share, then reindexes.
 func (s *Server) putShare(w http.ResponseWriter, r *http.Request) {
 	var sel index.Selection
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&sel); err != nil {
-		writeError(w, http.StatusBadRequest, "corps attendu : {\"all\": false, \"folders\": [\"films\"]}")
+		writeError(w, http.StatusBadRequest, "expected body: {\"all\": false, \"folders\": [\"movies\"]}")
 		return
 	}
 	if err := s.Node.Index().SetSelection(r.Context(), sel); err != nil {
@@ -410,13 +410,13 @@ func (s *Server) scan(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
-// eventsStream envoie en Server-Sent Events les notifications de changement
-// (« queue », « members », « settings ») et, chaque seconde pendant un
-// transfert, la progression des éléments actifs.
+// eventsStream sends change notifications ("queue", "members", "settings")
+// as Server-Sent Events and, every second during a transfer, the progress of
+// the active items.
 func (s *Server) eventsStream(w http.ResponseWriter, r *http.Request) {
 	fl, ok := w.(http.Flusher)
 	if !ok {
-		writeError(w, http.StatusInternalServerError, "flux non pris en charge")
+		writeError(w, http.StatusInternalServerError, "streaming not supported")
 		return
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -444,7 +444,7 @@ func (s *Server) eventsStream(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case kind := <-ch:
-			pending[kind] = true // regroupés, envoyés au prochain tic
+			pending[kind] = true // grouped, sent on the next tick
 		case <-ping.C:
 			if _, err := fmt.Fprint(w, ": ping\n\n"); err != nil {
 				return
@@ -466,7 +466,7 @@ func (s *Server) eventsStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// fail traduit une erreur en réponse, avec un message lisible par l'utilisateur.
+// fail turns an error into a response, with a user-readable message.
 func (s *Server) fail(w http.ResponseWriter, err error) {
 	code := http.StatusBadRequest
 	switch {
@@ -478,7 +478,7 @@ func (s *Server) fail(w http.ResponseWriter, err error) {
 		code = http.StatusPreconditionFailed
 	}
 	if s.Logger != nil {
-		s.Logger.Info("action refusée", "err", err)
+		s.Logger.Info("action refused", "err", err)
 	}
 	writeError(w, code, err.Error())
 }

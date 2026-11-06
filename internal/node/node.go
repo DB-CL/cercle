@@ -1,7 +1,6 @@
-// Package node assemble un nœud Cercle : base, clés, cercle, tunnel
-// WireGuard, API pair-à-pair, index du partage, brides d'upload et file de
-// téléchargement. Il fait tourner le gossip et réconcilie WireGuard avec la
-// table des membres.
+// Package node assembles a Cercle node: database, keys, circle, WireGuard
+// tunnel, peer API, share index, upload limits and download queue. It runs
+// the gossip and reconciles WireGuard with the member table.
 package node
 
 import (
@@ -32,17 +31,16 @@ import (
 	"github.com/DB-CL/cercle/internal/wg"
 )
 
-// Options configure un nœud. Les intervalles par défaut sont ceux du PRD ;
-// les tests les raccourcissent.
+// Options configures a node. Tests shorten the default intervals.
 type Options struct {
 	Config          config.Config
 	Logger          *slog.Logger
 	GossipInterval  time.Duration // 30 s
-	ResolveInterval time.Duration // 5 min, nouvelle résolution des noms DynDNS
+	ResolveInterval time.Duration // 5 min, DynDNS names resolved again
 	GossipFanout    int           // 2
 }
 
-// Node est un nœud Cercle.
+// Node is a Cercle node.
 type Node struct {
 	cfgMu  sync.Mutex
 	cfg    config.Config
@@ -62,12 +60,12 @@ type Node struct {
 	infoMu sync.Mutex
 	infos  map[string]peerInfo
 
-	devMu   sync.Mutex // démarrage et arrêt du tunnel
+	devMu   sync.Mutex // tunnel start and stop
 	dev     *wg.Device
 	devStop context.CancelFunc
 	devDone chan struct{}
 
-	recMu   sync.Mutex // une réconciliation à la fois
+	recMu   sync.Mutex // one reconciliation at a time
 	rr      map[string]int
 	revoked bool
 
@@ -80,7 +78,7 @@ type dnsEntry struct {
 	at    time.Time
 }
 
-// New ouvre la base et prépare le nœud ; Run le fait tourner.
+// New opens the database and prepares the node; Run drives it.
 func New(ctx context.Context, opt Options) (*Node, error) {
 	if opt.GossipInterval == 0 {
 		opt.GossipInterval = 30 * time.Second
@@ -119,7 +117,7 @@ func New(ctx context.Context, opt Options) (*Node, error) {
 	}
 	if err := os.MkdirAll(cfg.DownloadsDir, 0o755); err != nil {
 		n.st.Close()
-		return nil, fmt.Errorf("dossier des téléchargements : %w", err)
+		return nil, fmt.Errorf("downloads folder: %w", err)
 	}
 	n.ix = index.New(n.st, cfg.ShareDir, cfg.ShareExclude, n.log)
 	n.ix.OnScan = func() { n.events.Publish("share") }
@@ -133,7 +131,7 @@ func New(ctx context.Context, opt Options) (*Node, error) {
 	return n, nil
 }
 
-// remote renvoie un client pair-à-pair portant l'identifiant de cercle courant.
+// remote returns a peer client carrying the current circle ID.
 func (n *Node) remote() transfer.Remote { return remoteFunc{n} }
 
 type remoteFunc struct{ n *Node }
@@ -151,7 +149,7 @@ func (n *Node) peerClient() *peerapi.Client {
 	return n.client.WithCircle(circle)
 }
 
-// Accesseurs pour l'interface.
+// Accessors for the interface.
 func (n *Node) Store() *store.Store             { return n.st }
 func (n *Node) Index() *index.Index             { return n.ix }
 func (n *Node) Uploads() *transfer.Uploads      { return n.up }
@@ -159,7 +157,7 @@ func (n *Node) Queue() *transfer.Manager        { return n.queue }
 func (n *Node) Membership() *membership.Service { return n.ms }
 func (n *Node) PublicKey() wg.Key               { return n.wgKey.Public() }
 
-// Close ferme la base (après Run).
+// Close closes the database (after Run).
 func (n *Node) Close() error { return n.st.Close() }
 
 func (n *Node) dial(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -167,7 +165,7 @@ func (n *Node) dial(ctx context.Context, network, addr string) (net.Conn, error)
 	dev := n.dev
 	n.devMu.Unlock()
 	if dev == nil {
-		return nil, errors.New("tunnel arrêté : ce nœud n'appartient à aucun cercle")
+		return nil, errors.New("tunnel stopped: this node does not belong to any circle")
 	}
 	return dev.DialContext(ctx, network, addr)
 }
@@ -179,7 +177,7 @@ func (n *Node) poke() {
 	}
 }
 
-// Run fait tourner le nœud jusqu'à l'annulation de ctx.
+// Run drives the node until ctx is cancelled.
 func (n *Node) Run(ctx context.Context) error {
 	var bg sync.WaitGroup
 	defer bg.Wait()
@@ -188,7 +186,7 @@ func (n *Node) Run(ctx context.Context) error {
 	bg.Go(func() { n.ix.Run(ctx, n.cfg.ScanInterval) })
 	bg.Go(func() {
 		if err := n.queue.Run(ctx); err != nil {
-			n.log.Error("file de téléchargement arrêtée", "err", err)
+			n.log.Error("download queue stopped", "err", err)
 		}
 	})
 	defer n.stopDevice()
@@ -198,7 +196,7 @@ func (n *Node) Run(ctx context.Context) error {
 			return err
 		}
 	} else {
-		n.log.Info("aucun cercle : créez-en un ou rejoignez-en un depuis l'interface")
+		n.log.Info("no circle: create or join one from the interface")
 	}
 
 	t := time.NewTicker(n.opt.GossipInterval)
@@ -216,7 +214,7 @@ func (n *Node) Run(ctx context.Context) error {
 		case <-t.C:
 			n.releaseMemoryIfIdle(ctx)
 		case <-n.kick:
-			// Pas plus d'un tour par demi-seconde, même si les changements s'enchaînent.
+			// At most one round per half second, even if changes keep coming.
 			if d := 500*time.Millisecond - time.Since(last); d > 0 {
 				select {
 				case <-ctx.Done():
@@ -228,9 +226,9 @@ func (n *Node) Run(ctx context.Context) error {
 	}
 }
 
-// releaseMemoryIfIdle rend au système la mémoire gardée après des transferts
-// (tampons de WireGuard et de la pile TCP), si aucun n'est en cours. Sans cela,
-// le runtime Go la garde plusieurs minutes et un nœud au repos dépasse 70 Mo.
+// releaseMemoryIfIdle returns to the OS the memory kept after transfers
+// (WireGuard and TCP stack buffers) when none is in progress. Otherwise the Go
+// runtime keeps it for minutes and an idle node goes over 70 MB.
 func (n *Node) releaseMemoryIfIdle(ctx context.Context) {
 	if _, _, _, uploads := n.up.Limits(); uploads > 0 {
 		return
@@ -241,7 +239,7 @@ func (n *Node) releaseMemoryIfIdle(ctx context.Context) {
 	debug.FreeOSMemory()
 }
 
-// startDevice démarre le tunnel sur addr et l'API pair-à-pair dessus.
+// startDevice starts the tunnel on addr and the peer API on it.
 func (n *Node) startDevice(addr netip.Addr) error {
 	n.devMu.Lock()
 	defer n.devMu.Unlock()
@@ -274,11 +272,11 @@ func (n *Node) startDevice(addr netip.Addr) error {
 	go func() {
 		defer close(done)
 		if err := srv.Serve(ctx, l); err != nil {
-			n.log.Warn("API pair-à-pair arrêtée", "err", err)
+			n.log.Warn("peer API stopped", "err", err)
 		}
 	}()
 	n.dev, n.devStop, n.devDone = dev, cancel, done
-	n.log.Info("tunnel démarré", "tunnel_ip", addr, "listen_port", n.cfg.WGListenPort)
+	n.log.Info("tunnel started", "tunnel_ip", addr, "listen_port", n.cfg.WGListenPort)
 	return nil
 }
 
@@ -289,7 +287,7 @@ func (n *Node) stopDevice() {
 		return
 	}
 	n.devStop()
-	n.dev.Close() // coupe les connexions en cours, l'arrêt du serveur est immédiat
+	n.dev.Close() // cuts the open connections, so the server stops immediately
 	<-n.devDone
 	n.dev = nil
 }
@@ -309,7 +307,7 @@ func (n *Node) info(ctx context.Context) peerapi.Info {
 	return peerapi.Info{Name: name, Version: buildinfo.Version, ShareSize: size, ShareFiles: files, LastScan: last}
 }
 
-// directory adapte membership à peerapi.Directory.
+// directory adapts membership to peerapi.Directory.
 type directory struct{ ms *membership.Service }
 
 func (d directory) MemberByIP(ip netip.Addr) (peerapi.Member, bool) {
@@ -339,12 +337,12 @@ func (n *Node) handleGossip(ctx context.Context, from peerapi.Member, t membersh
 func (n *Node) acceptJoin(ctx context.Context, tempIP netip.Addr, req membership.JoinRequest) (membership.JoinResponse, error) {
 	resp, err := n.ms.AcceptJoin(ctx, tempIP, req)
 	if err == nil {
-		n.poke() // la vraie clé du nouveau membre au prochain tour, dans la demi-seconde
+		n.poke() // the new member's real key on the next round, within half a second
 	}
 	return resp, err
 }
 
-// CreateCircle fonde un cercle.
+// CreateCircle founds a circle.
 func (n *Node) CreateCircle(ctx context.Context) error {
 	if err := n.ms.Create(ctx, n.cfg.TunnelSubnet, n.Config().NodeName, n.cfg.WGPublicEndpoints); err != nil {
 		return err
@@ -353,11 +351,11 @@ func (n *Node) CreateCircle(ctx context.Context) error {
 	if err := n.startDevice(self.TunnelIP); err != nil {
 		return err
 	}
-	n.log.Info("cercle créé", "tunnel_ip", self.TunnelIP)
+	n.log.Info("circle created", "tunnel_ip", self.TunnelIP)
 	return nil
 }
 
-// Invite crée un code d'invitation.
+// Invite creates an invitation code.
 func (n *Node) Invite(ctx context.Context) (string, membership.Invite, error) {
 	temp, err := wg.GenerateKey()
 	if err != nil {
@@ -367,11 +365,11 @@ func (n *Node) Invite(ctx context.Context) (string, membership.Invite, error) {
 	if err != nil {
 		return "", membership.Invite{}, err
 	}
-	n.reconcile(ctx) // la clé temporaire doit être déclarée avant que l'invité n'arrive
+	n.reconcile(ctx) // the temporary key must be declared before the invitee arrives
 	return code.Encode(), inv, nil
 }
 
-// selfEndpoints : endpoints annoncés, puis ceux sous lesquels les autres nous voient.
+// selfEndpoints: announced endpoints, then those under which others see us.
 func (n *Node) selfEndpoints() []string {
 	eps := slices.Clone(n.cfg.WGPublicEndpoints)
 	me := n.wgKey.Public().String()
@@ -383,7 +381,7 @@ func (n *Node) selfEndpoints() []string {
 	return eps
 }
 
-// Revoke révoque un membre ; les autres nœuds l'apprennent par gossip.
+// Revoke revokes a member; the other nodes learn it through gossip.
 func (n *Node) Revoke(ctx context.Context, id string) error {
 	if err := n.ms.Revoke(ctx, id); err != nil {
 		return err
@@ -393,7 +391,7 @@ func (n *Node) Revoke(ctx context.Context, id string) error {
 	return nil
 }
 
-// Join rejoint un cercle avec un code d'invitation.
+// Join joins a circle with an invitation code.
 func (n *Node) Join(ctx context.Context, raw string) error {
 	code, err := membership.ParseCode(raw)
 	if err != nil {
@@ -413,14 +411,14 @@ func (n *Node) Join(ctx context.Context, raw string) error {
 	if err := n.startDevice(code.Assigned); err != nil {
 		return err
 	}
-	n.log.Info("cercle rejoint", "tunnel_ip", code.Assigned, "invited_by", code.InviterNom)
+	n.log.Info("circle joined", "tunnel_ip", code.Assigned, "invited_by", code.InviterName)
 	n.reconcile(ctx)
 	n.poke()
 	return nil
 }
 
-// joinWithTempKey monte un tunnel provisoire avec la clé temporaire du code
-// et envoie la demande d'adhésion, en essayant chaque endpoint de l'invitant.
+// joinWithTempKey brings up a temporary tunnel with the code's temporary key
+// and sends the join request, trying each of the inviter's endpoints.
 func (n *Node) joinWithTempKey(ctx context.Context, code membership.Code, req membership.JoinRequest) (membership.JoinResponse, error) {
 	tempKey, err := wg.ParseKey(code.TempKey)
 	if err != nil {
@@ -439,7 +437,7 @@ func (n *Node) joinWithTempKey(ctx context.Context, code membership.Code, req me
 	}
 	defer dev.Close()
 	client := peerapi.NewClient(dev.DialContext, code.Circle)
-	var lastErr error = errors.New("aucun endpoint dans le code")
+	var lastErr error = errors.New("no endpoint in the code")
 	for _, hp := range code.Endpoints {
 		for _, ep := range n.resolve(ctx, hp) {
 			if err := dev.SetPeers([]wg.Peer{{PublicKey: inviter, TunnelIP: code.InviterIP, Endpoint: ep}}); err != nil {
@@ -454,18 +452,18 @@ func (n *Node) joinWithTempKey(ctx context.Context, code membership.Code, req me
 			case errors.Is(err, membership.ErrInviteUsed), errors.Is(err, membership.ErrInviteExpired), errors.Is(err, membership.ErrInviteUnknown):
 				return membership.JoinResponse{}, err
 			}
-			n.log.Info("invitant injoignable par cet endpoint", "endpoint", ep, "err", err)
+			n.log.Info("inviter unreachable through this endpoint", "endpoint", ep, "err", err)
 			lastErr = err
-			// Une autre adresse : la session WireGuard repart de zéro.
+			// Another address: the WireGuard session starts over.
 			if err := dev.SetPeers(nil); err != nil {
 				return membership.JoinResponse{}, err
 			}
 		}
 	}
-	return membership.JoinResponse{}, fmt.Errorf("impossible de joindre %s : %w", code.InviterNom, lastErr)
+	return membership.JoinResponse{}, fmt.Errorf("cannot reach %s: %w", code.InviterName, lastErr)
 }
 
-// resolve transforme « hôte:port » en adresses, avec un cache de ResolveInterval.
+// resolve turns "host:port" into addresses, with a ResolveInterval cache.
 func (n *Node) resolve(ctx context.Context, hostport string) []netip.AddrPort {
 	if ap, err := netip.ParseAddrPort(hostport); err == nil {
 		return []netip.AddrPort{netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port())}
@@ -484,8 +482,8 @@ func (n *Node) resolve(ctx context.Context, hostport string) []netip.AddrPort {
 	defer cancel()
 	ips, err := net.DefaultResolver.LookupNetIP(rctx, "ip", host)
 	if err != nil {
-		n.log.Debug("résolution impossible", "host", host, "err", err)
-		return e.addrs // on garde l'ancienne réponse
+		n.log.Debug("resolution failed", "host", host, "err", err)
+		return e.addrs // keep the previous answer
 	}
 	var out []netip.AddrPort
 	for _, ip := range ips {
@@ -499,8 +497,8 @@ func (n *Node) resolve(ctx context.Context, hostport string) []netip.AddrPort {
 	return out
 }
 
-// reconcile aligne WireGuard sur la table des membres, publie les endpoints
-// observés et règle un éventuel conflit d'adresse.
+// reconcile aligns WireGuard with the member table, publishes the observed
+// endpoints and settles a possible address conflict.
 func (n *Node) reconcile(ctx context.Context) {
 	n.recMu.Lock()
 	defer n.recMu.Unlock()
@@ -509,11 +507,11 @@ func (n *Node) reconcile(ctx context.Context) {
 		return
 	}
 	if ip, err := n.ms.ResolveConflict(ctx); err != nil {
-		n.log.Error("conflit d'adresse", "err", err)
+		n.log.Error("address conflict", "err", err)
 	} else if ip.IsValid() {
 		n.stopDevice()
 		if err := n.startDevice(ip); err != nil {
-			n.log.Error("redémarrage du tunnel", "err", err)
+			n.log.Error("restarting the tunnel", "err", err)
 			return
 		}
 		dev = n.device()
@@ -524,7 +522,7 @@ func (n *Node) reconcile(ctx context.Context) {
 	}
 	if self.Revoked {
 		if !n.revoked {
-			n.log.Warn("ce nœud a été révoqué du cercle", "by", self.RevokedBy)
+			n.log.Warn("this node has been revoked from the circle", "by", self.RevokedBy)
 			n.revoked = true
 		}
 		_ = dev.SetPeers(nil)
@@ -561,7 +559,7 @@ func (n *Node) reconcile(ctx context.Context) {
 		}
 	}
 	if err := dev.SetPeers(peers); err != nil {
-		n.log.Error("réconciliation WireGuard", "err", err)
+		n.log.Error("WireGuard reconciliation", "err", err)
 	}
 	changed, err := n.ms.UpdateSelf(ctx, func(b *membership.Body) {
 		b.Announced = slices.Clone(n.cfg.WGPublicEndpoints)
@@ -572,15 +570,15 @@ func (n *Node) reconcile(ctx context.Context) {
 		}
 	})
 	if err != nil {
-		n.log.Error("mise à jour de la fiche", "err", err)
+		n.log.Error("updating the record", "err", err)
 	} else if changed {
 		n.poke()
 	}
 }
 
-// nextEndpoint choisit l'endpoint à essayer pour un pair : ses endpoints
-// annoncés, puis ceux sous lesquels les autres membres le voient. Tant que le
-// pair reste injoignable, on passe au suivant à chaque tour.
+// nextEndpoint picks the endpoint to try for a peer: its announced
+// endpoints, then those under which other members see it. While the peer
+// stays unreachable, the next one is tried on every round.
 func (n *Node) nextEndpoint(ctx context.Context, m membership.Member, members []membership.Member, online bool) netip.AddrPort {
 	var cands []netip.AddrPort
 	add := func(ap netip.AddrPort) {
@@ -604,15 +602,15 @@ func (n *Node) nextEndpoint(ctx context.Context, m membership.Member, members []
 		return netip.AddrPort{}
 	}
 	if online {
-		return cands[0] // ignoré par SetPeers : la session vivante garde son endpoint
+		return cands[0] // ignored by SetPeers: the live session keeps its endpoint
 	}
 	i := n.rr[m.NodeID] % len(cands)
 	n.rr[m.NodeID]++
 	return cands[i]
 }
 
-// gossipRound échange la table avec quelques pairs tirés au hasard, en
-// préférant ceux qui sont en ligne.
+// gossipRound exchanges the table with a few random peers, preferring online
+// ones.
 func (n *Node) gossipRound(ctx context.Context) {
 	dev := n.device()
 	self, ok := n.ms.Self()
@@ -653,12 +651,12 @@ func (n *Node) gossipRound(ctx context.Context) {
 			defer cancel()
 			t, err := client.Gossip(rctx, m.TunnelIP, n.ms.Table())
 			if err != nil {
-				n.log.Debug("gossip impossible", "peer", m.DisplayName, "err", err)
+				n.log.Debug("gossip failed", "peer", m.DisplayName, "err", err)
 				return
 			}
 			c, err := n.ms.Merge(ctx, t)
 			if err != nil {
-				n.log.Error("fusion de table", "peer", m.DisplayName, "err", err)
+				n.log.Error("merging a table", "peer", m.DisplayName, "err", err)
 				return
 			}
 			mu.Lock()
@@ -679,7 +677,7 @@ func shuffle(ms []membership.Member) {
 	}
 }
 
-// PeerState est l'état réseau d'un membre, pour l'interface.
+// PeerState is a member's network state, for the interface.
 type PeerState struct {
 	membership.Member
 	Online        bool      `json:"online"`
@@ -693,7 +691,7 @@ type PeerState struct {
 	InfoAt        time.Time `json:"info_at,omitzero"`
 }
 
-// Peers renvoie les membres avec leur état WireGuard.
+// Peers returns the members with their WireGuard state.
 func (n *Node) Peers() []PeerState {
 	status := map[string]wg.PeerStatus{}
 	if dev := n.device(); dev != nil {
@@ -727,5 +725,5 @@ func (n *Node) Peers() []PeerState {
 	return out
 }
 
-// TunnelUp dit si le tunnel tourne.
+// TunnelUp reports whether the tunnel is running.
 func (n *Node) TunnelUp() bool { return n.device() != nil }

@@ -12,7 +12,7 @@ import (
 )
 
 func TestLoadOrCreateKey(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "sous", "node.key")
+	path := filepath.Join(t.TempDir(), "sub", "node.key")
 	k1, err := LoadOrCreateKey(path)
 	if err != nil {
 		t.Fatal(err)
@@ -22,20 +22,20 @@ func TestLoadOrCreateKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	if fi.Mode().Perm() != 0o600 {
-		t.Errorf("droits = %v, attendu 0600", fi.Mode().Perm())
+		t.Errorf("permissions = %v, want 0600", fi.Mode().Perm())
 	}
 	k2, err := LoadOrCreateKey(path)
 	if err != nil || k1 != k2 {
-		t.Fatalf("la clé relue diffère : %v", err)
+		t.Fatalf("reloaded key differs: %v", err)
 	}
 	if k1.Public() == k1 || k1.Public().IsZero() {
-		t.Fatal("clé publique incohérente")
+		t.Fatal("inconsistent public key")
 	}
-	if err := os.WriteFile(path, []byte("abîmée"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("damaged"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := LoadOrCreateKey(path); err == nil {
-		t.Fatal("une clé illisible doit être signalée, pas remplacée")
+		t.Fatal("an unreadable key must be reported, not replaced")
 	}
 }
 
@@ -44,10 +44,10 @@ func TestKeyText(t *testing.T) {
 	b, _ := k.MarshalText()
 	var back Key
 	if err := back.UnmarshalText(b); err != nil || back != k {
-		t.Fatalf("aller-retour base64 raté : %v", err)
+		t.Fatalf("base64 round trip failed: %v", err)
 	}
 	if _, err := ParseKey("dHJvcCBjb3VydA=="); err == nil {
-		t.Fatal("clé trop courte acceptée")
+		t.Fatal("short key accepted")
 	}
 }
 
@@ -67,17 +67,17 @@ func TestParseIpcGet(t *testing.T) {
 		case k1:
 			if p.Endpoint.String() != "203.0.113.4:51820" || p.RxBytes != 20 || p.TxBytes != 10 ||
 				!p.LastHandshake.Equal(time.Unix(1700000000, 5)) || p.AllowedIPs[0].String() != "10.42.0.2/32" {
-				t.Errorf("pair 1 mal lu : %+v", p)
+				t.Errorf("peer 1 misread: %+v", p)
 			}
 		case k2:
 			if !p.LastHandshake.IsZero() || p.Endpoint.IsValid() {
-				t.Errorf("pair 2 mal lu : %+v", p)
+				t.Errorf("peer 2 misread: %+v", p)
 			}
 		}
 	}
 }
 
-// node est un nœud de test écoutant en UDP sur 127.0.0.1.
+// node is a test node listening on UDP 127.0.0.1.
 type node struct {
 	key  Key
 	dev  *Device
@@ -112,7 +112,7 @@ func (n *node) asPeer() Peer {
 	return Peer{PublicKey: n.key.Public(), TunnelIP: n.ip, Endpoint: netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), uint16(n.port))}
 }
 
-// link relie deux nœuds dans les deux sens.
+// link connects two nodes both ways.
 func link(t testing.TB, a, b *node) {
 	t.Helper()
 	if err := a.dev.SetPeers([]Peer{b.asPeer()}); err != nil {
@@ -160,22 +160,22 @@ func TestTunnelEchoAndReconcile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	msg := []byte("bonjour à travers le tunnel")
+	msg := []byte("hello through the tunnel")
 	if _, err := c.Write(msg); err != nil {
 		t.Fatal(err)
 	}
 	got := make([]byte, len(msg))
 	if _, err := io.ReadFull(c, got); err != nil || string(got) != string(msg) {
-		t.Fatalf("écho = %q, %v", got, err)
+		t.Fatalf("echo = %q, %v", got, err)
 	}
 	c.Close()
 
 	st, err := b.dev.Peers()
 	if err != nil || len(st) != 1 || !st[0].Online(time.Now()) || st[0].RxBytes == 0 {
-		t.Fatalf("état du pair après échange : %+v, %v", st, err)
+		t.Fatalf("peer state after exchange: %+v, %v", st, err)
 	}
 
-	// Une réconciliation avec un endpoint faux ne doit pas casser la session vivante.
+	// Reconciling with a wrong endpoint must not break the live session.
 	wrong := a.asPeer()
 	wrong.Endpoint = netip.MustParseAddrPort("127.0.0.1:9")
 	if err := b.dev.SetPeers([]Peer{wrong}); err != nil {
@@ -183,21 +183,21 @@ func TestTunnelEchoAndReconcile(t *testing.T) {
 	}
 	st, _ = b.dev.Peers()
 	if st[0].Endpoint.Port() != uint16(a.port) {
-		t.Fatalf("endpoint vivant écrasé : %v", st[0].Endpoint)
+		t.Fatalf("live endpoint overwritten: %v", st[0].Endpoint)
 	}
 
-	// Retrait du pair : plus aucune connexion possible.
+	// Peer removed: no connection possible any more.
 	if err := b.dev.SetPeers(nil); err != nil {
 		t.Fatal(err)
 	}
 	if st, _ := b.dev.Peers(); len(st) != 0 {
-		t.Fatalf("pair non retiré : %+v", st)
+		t.Fatalf("peer not removed: %+v", st)
 	}
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel2()
 	if c, err := dial(ctx2, b, a.ip, 7); err == nil {
 		c.Close()
-		t.Fatal("connexion possible après retrait du pair")
+		t.Fatal("connection possible after removing the peer")
 	}
 }
 
@@ -206,10 +206,10 @@ func TestSetPeersRejectsInvalid(t *testing.T) {
 	b := newNode(t, "10.42.0.2")
 	p := b.asPeer()
 	if err := a.dev.SetPeers([]Peer{p, p}); err == nil {
-		t.Error("pair en double accepté")
+		t.Error("duplicate peer accepted")
 	}
 	p.TunnelIP = netip.Addr{}
 	if err := a.dev.SetPeers([]Peer{p}); err == nil {
-		t.Error("pair sans adresse accepté")
+		t.Error("peer without address accepted")
 	}
 }

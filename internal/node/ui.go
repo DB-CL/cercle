@@ -14,15 +14,15 @@ import (
 	"github.com/DB-CL/cercle/internal/peerapi"
 )
 
-// Hub diffuse des notifications de changement (« queue », « members ») aux
-// clients de l'interface. Un abonné lent perd des notifications, jamais l'état :
-// il relit ce qui a changé.
+// Hub broadcasts change notifications ("queue", "members") to interface
+// clients. A slow subscriber loses notifications, never state: it reads back
+// what changed.
 type Hub struct {
 	mu   sync.Mutex
 	subs map[chan string]struct{}
 }
 
-// Subscribe s'abonne ; cancel se désabonne.
+// Subscribe subscribes; cancel unsubscribes.
 func (h *Hub) Subscribe() (<-chan string, func()) {
 	ch := make(chan string, 16)
 	h.mu.Lock()
@@ -38,7 +38,7 @@ func (h *Hub) Subscribe() (<-chan string, func()) {
 	}
 }
 
-// Publish notifie tous les abonnés.
+// Publish notifies every subscriber.
 func (h *Hub) Publish(kind string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -50,12 +50,11 @@ func (h *Hub) Publish(kind string) {
 	}
 }
 
-// Events renvoie le diffuseur de notifications.
+// Events returns the notification hub.
 func (n *Node) Events() *Hub { return &n.events }
 
-// Settings sont les réglages modifiables depuis l'interface. Les débits sont
-// au format de l'environnement (« 20M », « 0 » = illimité), les créneaux
-// « HH:MM-HH:MM » ou vides.
+// Settings are the settings editable from the interface. Rates use the
+// environment format ("20M", "0" = unlimited), windows "HH:MM-HH:MM" or empty.
 type Settings struct {
 	Name                string `json:"name"`
 	UploadLimit         string `json:"upload_limit"`
@@ -73,7 +72,7 @@ func windowString(w *config.Window) string {
 	return w.String()
 }
 
-// Settings renvoie les réglages en vigueur.
+// Settings returns the settings in effect.
 func (n *Node) Settings() Settings {
 	c := n.Config()
 	return Settings{
@@ -83,24 +82,24 @@ func (n *Node) Settings() Settings {
 	}
 }
 
-// SettingsError signale un réglage invalide, champ par champ.
+// SettingsError reports invalid settings, field by field.
 type SettingsError map[string]string
 
 func (e SettingsError) Error() string {
 	var parts []string
 	for k, v := range e {
-		parts = append(parts, k+" : "+v)
+		parts = append(parts, k+": "+v)
 	}
-	return "réglages invalides (" + strings.Join(parts, " ; ") + ")"
+	return "invalid settings (" + strings.Join(parts, "; ") + ")"
 }
 
-// SetSettings valide, enregistre et applique à chaud de nouveaux réglages.
-// Une fois enregistrés, ils priment sur les variables d'environnement.
+// SetSettings validates, stores and applies new settings live. Once stored,
+// they take precedence over the environment variables.
 func (n *Node) SetSettings(ctx context.Context, s Settings) error {
 	errs := SettingsError{}
 	name := strings.TrimSpace(s.Name)
 	if name == "" || len(name) > 64 {
-		errs["name"] = "nom de 1 à 64 caractères attendu"
+		errs["name"] = "expected a name of 1 to 64 characters"
 	}
 	up, err := config.ParseRate(s.UploadLimit)
 	if err != nil {
@@ -111,10 +110,10 @@ func (n *Node) SetSettings(ctx context.Context, s Settings) error {
 		errs["download_limit"] = err.Error()
 	}
 	if s.MaxUploads < 1 || s.MaxUploads > 50 {
-		errs["max_uploads"] = "entre 1 et 50"
+		errs["max_uploads"] = "between 1 and 50"
 	}
 	if s.DownloadConcurrency < 1 || s.DownloadConcurrency > 20 {
-		errs["download_concurrency"] = "entre 1 et 20"
+		errs["download_concurrency"] = "between 1 and 20"
 	}
 	parseWin := func(field, v string) *config.Window {
 		if strings.TrimSpace(v) == "" {
@@ -167,7 +166,7 @@ func (n *Node) SetSettings(ctx context.Context, s Settings) error {
 	return nil
 }
 
-// Config renvoie une copie de la configuration en vigueur.
+// Config returns a copy of the configuration in effect.
 func (n *Node) Config() config.Config {
 	n.cfgMu.Lock()
 	defer n.cfgMu.Unlock()
@@ -179,7 +178,7 @@ type peerInfo struct {
 	at   time.Time
 }
 
-// refreshInfo interroge les pairs en ligne dont l'info date de plus d'une minute.
+// refreshInfo queries online peers whose info is older than a minute.
 func (n *Node) refreshInfo(ctx context.Context) {
 	var g sync.WaitGroup
 	for _, p := range n.Peers() {
@@ -208,22 +207,22 @@ func (n *Node) refreshInfo(ctx context.Context) {
 	g.Wait()
 }
 
-// BrowsePeer lit une page du partage d'un membre.
+// BrowsePeer reads a page of a member's share.
 func (n *Node) BrowsePeer(ctx context.Context, id, dir, cursor string) (peerapi.FilesPage, error) {
 	p, ok := n.peerByID(id)
 	if !ok {
-		return peerapi.FilesPage{}, errors.New("membre inconnu, révoqué ou injoignable")
+		return peerapi.FilesPage{}, errors.New("unknown, revoked or unreachable member")
 	}
 	page, err := n.peerClient().Files(ctx, p.IP, dir, cursor)
 	if err != nil {
 		var se *peerapi.StatusError
 		if errors.As(err, &se) {
-			return page, fmt.Errorf("%s a refusé : %s", p.Name, se.Message)
+			return page, fmt.Errorf("%s refused: %s", p.Name, se.Message)
 		}
-		return page, fmt.Errorf("%s ne répond pas : %w", p.Name, err)
+		return page, fmt.Errorf("%s does not answer: %w", p.Name, err)
 	}
 	return page, nil
 }
 
-// ScanNow relance le scan du partage.
+// ScanNow triggers a share scan.
 func (n *Node) ScanNow() { n.ix.TriggerScan() }

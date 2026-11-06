@@ -1,15 +1,15 @@
 #!/bin/sh
-# Régénère THIRD_PARTY_LICENSES.md : texte complet de la licence de chaque
-# module lié au binaire (obligatoire pour distribuer l'image).
+# Regenerates THIRD_PARTY_LICENSES.md: full license text of every module
+# linked into the binary (required to distribute the image).
 #   deploy/licenses.sh
 set -e
 cd "$(dirname "$0")/.."
 out=THIRD_PARTY_LICENSES.md
 mods=$(deploy/go.sh list -deps -f '{{with .Module}}{{.Path}} {{.Version}} {{.Dir}}{{end}}' ./cmd/cercle | sort -u | grep -v '^github.com/DB-CL/cercle ')
 {
-  echo "# Licences des composants tiers"
+  echo "# Third-party licenses"
   echo
-  echo "Le binaire \`cercle\` et l'image Docker incluent les modules suivants. Leurs licences sont reproduites ci-dessous, comme elles l'exigent. Le compilateur et la bibliothèque standard de Go sont sous licence BSD (https://go.dev/LICENSE)."
+  echo "The \`cercle\` binary and the Docker image include the following modules. Their licenses are reproduced below, as they require. The Go compiler and standard library are under the BSD license (https://go.dev/LICENSE)."
   echo
   echo "$mods" | while read -r path version dir; do echo "- \`$path\` $version"; done
   echo "$mods" | while read -r path version dir; do
@@ -25,4 +25,4 @@ mods=$(deploy/go.sh list -deps -f '{{with .Module}}{{.Path}} {{.Version}} {{.Dir
     done
   done
 } > "$out"
-echo "$out : $(echo "$mods" | wc -l) modules"
+echo "$out: $(echo "$mods" | wc -l) modules"

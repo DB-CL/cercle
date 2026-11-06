@@ -1,7 +1,7 @@
 #!/bin/sh
-# Lance la chaîne Go dans Docker (pas de Go installé sur l'hôte).
-# Usage : deploy/go.sh test ./...   |   deploy/go.sh run ./cmd/cercle
-# CGO_ENABLED, CERCLE_BENCH_MB, CERCLE_SCAN_FILES, CERCLE_QUEUE_FILES et CERCLE_REAL_GOSSIP sont transmis au conteneur s'ils sont définis.
+# Runs the Go toolchain in Docker (no Go installed on the host).
+# Usage: deploy/go.sh test ./...   |   deploy/go.sh run ./cmd/cercle
+# CGO_ENABLED, CERCLE_BENCH_MB, CERCLE_SCAN_FILES, CERCLE_QUEUE_FILES and CERCLE_REAL_GOSSIP are passed to the container when set.
 set -e
 cd "$(dirname "$0")/.."
 mkdir -p "$HOME/.cache/cercle-go"

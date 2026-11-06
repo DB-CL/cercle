@@ -29,8 +29,8 @@ type shareFixture struct {
 	data    map[string][]byte
 }
 
-// newShare sert un partage de test par HTTP ordinaire : le middleware voit
-// 127.0.0.1, déclaré membre. Le tunnel est couvert par peerapi_test.go.
+// newShare serves a test share over plain HTTP: the middleware sees
+// 127.0.0.1, declared as a member. The tunnel is covered by peerapi_test.go.
 func newShare(t *testing.T, files map[string]int) *shareFixture {
 	t.Helper()
 	base := t.TempDir()
@@ -48,7 +48,7 @@ func newShare(t *testing.T, files map[string]int) *shareFixture {
 		}
 		data[rel] = b
 	}
-	if err := os.WriteFile(filepath.Join(base, "secret"), []byte("hors partage"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(base, "secret"), []byte("outside the share"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(filepath.Join(base, "secret"), filepath.Join(share, "fuite")); err != nil {
@@ -107,21 +107,21 @@ func TestFileRangeAndETag(t *testing.T) {
 	r := f.get(t, "films/a.bin", nil)
 	etag := r.Header.Get("ETag")
 	if got := body(t, r); r.StatusCode != 200 || !bytes.Equal(got, want) || etag == "" {
-		t.Fatalf("fichier entier : %d, %d octets, ETag %q", r.StatusCode, len(got), etag)
+		t.Fatalf("whole file: %d, %d bytes, ETag %q", r.StatusCode, len(got), etag)
 	}
 	if r.Header.Get("Accept-Ranges") != "bytes" {
-		t.Error("Accept-Ranges absent")
+		t.Error("Accept-Ranges missing")
 	}
 
 	r = f.get(t, "films/a.bin", map[string]string{"Range": "bytes=1000-", "If-Range": etag})
 	if got := body(t, r); r.StatusCode != http.StatusPartialContent || !bytes.Equal(got, want[1000:]) {
-		t.Fatalf("reprise : %d, %d octets", r.StatusCode, len(got))
+		t.Fatalf("resume: %d, %d bytes", r.StatusCode, len(got))
 	}
 
-	// Fichier modifié depuis : If-Range ne correspond plus, le fichier repart de zéro.
+	// File changed since: If-Range no longer matches, the file restarts from zero.
 	r = f.get(t, "films/a.bin", map[string]string{"Range": "bytes=1000-", "If-Range": `"1-1"`})
 	if got := body(t, r); r.StatusCode != 200 || len(got) != len(want) {
-		t.Fatalf("ETag périmé : %d, %d octets ; 200 et fichier entier attendus", r.StatusCode, len(got))
+		t.Fatalf("stale ETag: %d, %d bytes; want 200 and the whole file", r.StatusCode, len(got))
 	}
 
 	for path, code := range map[string]int{
@@ -131,16 +131,16 @@ func TestFileRangeAndETag(t *testing.T) {
 		r := f.get(t, path, nil)
 		body(t, r)
 		if r.StatusCode != code {
-			t.Errorf("%s : %d, attendu %d", path, r.StatusCode, code)
+			t.Errorf("%s: %d, want %d", path, r.StatusCode, code)
 		}
 	}
 }
 
-// TestUploadLimits couvre deux critères d'acceptation : UPLOAD_LIMIT=10M donne
-// 9 à 11 Mio/s au total avec 3 téléchargeurs, et le 4e reçoit 503 + Retry-After.
+// TestUploadLimits covers two acceptance criteria: UPLOAD_LIMIT=10M gives 9 to
+// 11 MiB/s in total with 3 downloaders, and the 4th gets 503 + Retry-After.
 func TestUploadLimits(t *testing.T) {
 	if testing.Short() {
-		t.Skip("ignoré avec -short (3 s)")
+		t.Skip("skipped with -short (3 s)")
 	}
 	const size = 8 << 20
 	f := newShare(t, map[string]int{"a": size, "b": size, "c": size, "d": 10})
@@ -163,7 +163,7 @@ func TestUploadLimits(t *testing.T) {
 	r := f.get(t, "d", nil)
 	body(t, r)
 	if r.StatusCode != http.StatusServiceUnavailable || r.Header.Get("Retry-After") != "60" {
-		t.Errorf("4e téléchargeur : %d, Retry-After %q ; 503 et 60 attendus", r.StatusCode, r.Header.Get("Retry-After"))
+		t.Errorf("4th downloader: %d, Retry-After %q; want 503 and 60", r.StatusCode, r.Header.Get("Retry-After"))
 	}
 	wg.Wait()
 	close(results)
@@ -172,15 +172,15 @@ func TestUploadLimits(t *testing.T) {
 		total += n
 	}
 	rate := float64(total) / time.Since(start).Seconds() / (1 << 20)
-	t.Logf("débit total : %.2f Mio/s", rate)
+	t.Logf("total rate: %.2f MiB/s", rate)
 	if total != 3*size || rate < 9 || rate > 11 {
-		t.Errorf("débit total %.2f Mio/s (%d octets), attendu 9 à 11", rate, total)
+		t.Errorf("total rate %.2f MiB/s (%d bytes), want 9 to 11", rate, total)
 	}
 
-	// Place libérée : le 4e passe.
+	// Slot released: the 4th goes through.
 	r = f.get(t, "d", nil)
 	if body(t, r); r.StatusCode != 200 {
-		t.Errorf("après libération : %d", r.StatusCode)
+		t.Errorf("after release: %d", r.StatusCode)
 	}
 }
 
@@ -196,23 +196,23 @@ func TestFilesAndTreeHTTP(t *testing.T) {
 		return r, string(body(t, r))
 	}
 	if r, b := get("/api/v1/files?path="); r.StatusCode != 200 || !bytes.Contains([]byte(b), []byte(`"name":"films"`)) {
-		t.Errorf("files racine : %d %s", r.StatusCode, b)
+		t.Errorf("files at root: %d %s", r.StatusCode, b)
 	}
 	if r, b := get("/api/v1/tree?path=films"); r.StatusCode != 200 || bytes.Count([]byte(b), []byte("\n")) != 2 {
 		t.Errorf("tree : %d %s", r.StatusCode, b)
 	}
 	if r, _ := get("/api/v1/files?path=../x"); r.StatusCode != 400 {
-		t.Errorf("files avec .. : %d", r.StatusCode)
+		t.Errorf("files with ..: %d", r.StatusCode)
 	}
 	if r, _ := get("/api/v1/files?path=films&cursor=zzzz"); r.StatusCode != 400 {
-		t.Errorf("curseur invalide : %d", r.StatusCode)
+		t.Errorf("invalid cursor: %d", r.StatusCode)
 	}
 	if r, _ := get("/api/v1/tree?path=absent"); r.StatusCode != 404 {
-		t.Errorf("tree absent : %d", r.StatusCode)
+		t.Errorf("missing tree: %d", r.StatusCode)
 	}
 }
 
-// TestBrowseThroughTunnel : navigation par le client, à travers WireGuard.
+// TestBrowseThroughTunnel: browsing with the client, through WireGuard.
 func TestBrowseThroughTunnel(t *testing.T) {
 	alice := startNode(t, "alice", "10.42.0.1")
 	bob := startNode(t, "bob", "10.42.0.2")
@@ -235,8 +235,8 @@ func TestBrowseThroughTunnel(t *testing.T) {
 	defer func() { cancel(); <-done }()
 
 	c := NewClient(bob.dev.DialContext, "c")
-	// Premier contact : la poignée de main WireGuard peut se perdre et n'être
-	// réessayée qu'au bout de 5 s (voire deux fois). On attend le lien, au plus 30 s.
+	// First contact: the WireGuard handshake may be lost and only retried after
+	// 5 s (possibly twice). Wait for the link, 30 s at most.
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		ictx, icancel := context.WithTimeout(context.Background(), 6*time.Second)
@@ -246,7 +246,7 @@ func TestBrowseThroughTunnel(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("tunnel jamais établi : %v", err)
+			t.Fatalf("tunnel never established: %v", err)
 		}
 	}
 	rctx, rcancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -262,6 +262,6 @@ func TestBrowseThroughTunnel(t *testing.T) {
 	}
 	_, err = c.Files(rctx, alice.ip, "absent", "")
 	if se, ok := err.(*StatusError); !ok || se.Code != 404 {
-		t.Fatalf("dossier absent : %v", err)
+		t.Fatalf("missing folder: %v", err)
 	}
 }

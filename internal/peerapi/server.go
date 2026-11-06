@@ -1,6 +1,6 @@
-// Package peerapi est l'API HTTP entre nœuds. Elle n'écoute que dans le
-// tunnel WireGuard : le chiffrement et l'authentification viennent de lui, et
-// l'identité de l'appelant est son adresse source dans le tunnel.
+// Package peerapi is the node-to-node HTTP API. It only listens inside the
+// WireGuard tunnel: encryption and authentication come from WireGuard, and
+// the caller's identity is its source address in the tunnel.
 package peerapi
 
 import (
@@ -20,29 +20,29 @@ import (
 	"github.com/DB-CL/cercle/internal/transfer"
 )
 
-// Port est le port TCP de l'API, sur l'adresse de tunnel.
+// Port is the API TCP port, on the tunnel address.
 const Port = 8787
 
-// CircleHeader porte l'identifiant du cercle dans chaque requête.
+// CircleHeader carries the circle ID in every request.
 const CircleHeader = "X-Cercle-Circle"
 
-// MtimeHeader donne la date de modification exacte (nanosecondes Unix) d'un
-// fichier servi : Last-Modified n'a qu'une précision d'une seconde.
+// MtimeHeader gives the exact modification time (Unix nanoseconds) of a
+// served file: Last-Modified only has one-second precision.
 const MtimeHeader = transfer.MtimeHeader
 
-// Member est un membre connu, identifié par son adresse de tunnel.
+// Member is a known member, identified by its tunnel address.
 type Member struct {
-	NodeID   string // clé publique WireGuard en base64
+	NodeID   string // WireGuard public key in base64
 	Name     string
 	TunnelIP netip.Addr
 }
 
-// Directory retrouve le membre (non révoqué) qui possède une adresse de tunnel.
+// Directory finds the (non-revoked) member owning a tunnel address.
 type Directory interface {
 	MemberByIP(ip netip.Addr) (Member, bool)
 }
 
-// Info est la réponse de GET /api/v1/info.
+// Info is the response of GET /api/v1/info.
 type Info struct {
 	Name       string     `json:"name"`
 	Version    string     `json:"version"`
@@ -51,7 +51,7 @@ type Info struct {
 	LastScan   *time.Time `json:"last_scan,omitempty"`
 }
 
-// Server sert l'API pair-à-pair.
+// Server serves the peer API.
 type Server struct {
 	CircleID  string
 	Directory Directory
@@ -60,14 +60,14 @@ type Server struct {
 	Uploads   *transfer.Uploads
 	Logger    *slog.Logger
 
-	// Adhésion (J4). InviteIP dit si une adresse est celle d'une clé
-	// temporaire d'invitation : elle n'a accès qu'à POST /api/v1/join.
+	// Membership. InviteIP reports whether an address belongs to a temporary
+	// invitation key: it can only reach POST /api/v1/join.
 	InviteIP func(ctx context.Context, ip netip.Addr) bool
 	Join     func(ctx context.Context, tempIP netip.Addr, req membership.JoinRequest) (membership.JoinResponse, error)
 	Gossip   func(ctx context.Context, from Member, t membership.Table) (membership.Table, error)
 }
 
-// FilesPage est la réponse de GET /api/v1/files.
+// FilesPage is the response of GET /api/v1/files.
 type FilesPage struct {
 	Entries []index.Entry `json:"entries"`
 	Next    string        `json:"next,omitempty"`
@@ -75,13 +75,13 @@ type FilesPage struct {
 
 type ctxKey struct{}
 
-// MemberFrom renvoie le membre authentifié de la requête.
+// MemberFrom returns the authenticated member of the request.
 func MemberFrom(ctx context.Context) (Member, bool) {
 	m, ok := ctx.Value(ctxKey{}).(Member)
 	return m, ok
 }
 
-// Handler renvoie le routeur, derrière le middleware d'identité.
+// Handler returns the router, behind the identity middleware.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/info", s.handleInfo)
@@ -93,23 +93,23 @@ func (s *Server) Handler() http.Handler {
 	return s.identify(mux, join)
 }
 
-// identify rattache chaque requête à un membre par son IP source, authentifiée
-// par WireGuard. Une clé temporaire d'invitation n'atteint que join. Adresse
-// inconnue ou cercle différent : 403.
+// identify ties every request to a member through its source IP,
+// authenticated by WireGuard. A temporary invitation key only reaches join.
+// Unknown address or other circle: 403.
 func (s *Server) identify(next, join http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ap, err := netip.ParseAddrPort(r.RemoteAddr)
 		if err != nil {
-			writeError(w, http.StatusForbidden, "adresse source illisible")
+			writeError(w, http.StatusForbidden, "unreadable source address")
 			return
 		}
 		if s.InviteIP != nil && s.InviteIP(r.Context(), ap.Addr().Unmap()) {
 			if r.Method != http.MethodPost || r.URL.Path != "/api/v1/join" || s.Join == nil {
-				writeError(w, http.StatusForbidden, "une clé d'invitation n'a accès qu'à /api/v1/join")
+				writeError(w, http.StatusForbidden, "an invitation key can only reach /api/v1/join")
 				return
 			}
 			if subtle.ConstantTimeCompare([]byte(r.Header.Get(CircleHeader)), []byte(s.CircleID)) != 1 {
-				writeError(w, http.StatusForbidden, "cercle inconnu")
+				writeError(w, http.StatusForbidden, "unknown circle")
 				return
 			}
 			join.ServeHTTP(w, r)
@@ -117,13 +117,13 @@ func (s *Server) identify(next, join http.Handler) http.Handler {
 		}
 		m, ok := s.Directory.MemberByIP(ap.Addr().Unmap())
 		if !ok {
-			s.log().Warn("requête d'une adresse inconnue refusée", "ip", ap.Addr(), "path", r.URL.Path)
-			writeError(w, http.StatusForbidden, "adresse de tunnel inconnue")
+			s.log().Warn("request from an unknown address refused", "ip", ap.Addr(), "path", r.URL.Path)
+			writeError(w, http.StatusForbidden, "unknown tunnel address")
 			return
 		}
 		if subtle.ConstantTimeCompare([]byte(r.Header.Get(CircleHeader)), []byte(s.CircleID)) != 1 {
-			s.log().Warn("requête d'un autre cercle refusée", "member", m.Name, "path", r.URL.Path)
-			writeError(w, http.StatusForbidden, "cercle inconnu")
+			s.log().Warn("request from another circle refused", "member", m.Name, "path", r.URL.Path)
+			writeError(w, http.StatusForbidden, "unknown circle")
 			return
 		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, m)))
@@ -140,7 +140,7 @@ func (s *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
 	ap, _ := netip.ParseAddrPort(r.RemoteAddr)
 	var req membership.JoinRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "demande d'adhésion illisible")
+		writeError(w, http.StatusBadRequest, "unreadable join request")
 		return
 	}
 	resp, err := s.Join(r.Context(), ap.Addr().Unmap(), req)
@@ -154,53 +154,53 @@ func (s *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, membership.ErrInviteUnknown):
 		writeError(w, http.StatusForbidden, err.Error())
 	default:
-		s.log().Warn("adhésion refusée", "err", err)
+		s.log().Warn("join refused", "err", err)
 		writeError(w, http.StatusBadRequest, err.Error())
 	}
 }
 
 func (s *Server) handleGossip(w http.ResponseWriter, r *http.Request) {
 	if s.Gossip == nil {
-		writeError(w, http.StatusNotFound, "gossip indisponible")
+		writeError(w, http.StatusNotFound, "gossip unavailable")
 		return
 	}
 	m, _ := MemberFrom(r.Context())
 	var t membership.Table
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxTableBytes)).Decode(&t); err != nil {
-		writeError(w, http.StatusBadRequest, "table illisible")
+		writeError(w, http.StatusBadRequest, "unreadable table")
 		return
 	}
 	out, err := s.Gossip(r.Context(), m, t)
 	if err != nil {
 		s.log().Error("gossip", "member", m.Name, "err", err)
-		writeError(w, http.StatusInternalServerError, "erreur interne")
+		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
-// sharePath lit et valide le paramètre path ; en cas de refus, la réponse est déjà écrite.
+// sharePath reads and validates the path parameter; on refusal the response is already written.
 func (s *Server) sharePath(w http.ResponseWriter, r *http.Request) (string, bool) {
 	p, err := index.CleanPath(r.URL.Query().Get("path"))
 	if err != nil {
 		m, _ := MemberFrom(r.Context())
-		s.log().Warn("chemin refusé", "member", m.Name, "path", r.URL.Query().Get("path"))
-		writeError(w, http.StatusBadRequest, "chemin refusé")
+		s.log().Warn("path refused", "member", m.Name, "path", r.URL.Query().Get("path"))
+		writeError(w, http.StatusBadRequest, "path refused")
 		return "", false
 	}
 	return p, true
 }
 
-// indexError traduit une erreur de l'index en réponse HTTP.
+// indexError translates an index error into an HTTP response.
 func (s *Server) indexError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, index.ErrNotFound):
-		writeError(w, http.StatusNotFound, "introuvable")
+		writeError(w, http.StatusNotFound, "not found")
 	case errors.Is(err, index.ErrBadPath):
-		writeError(w, http.StatusBadRequest, "chemin refusé")
+		writeError(w, http.StatusBadRequest, "path refused")
 	default:
-		s.log().Error("erreur de l'index", "err", err)
-		writeError(w, http.StatusInternalServerError, "erreur interne")
+		s.log().Error("index error", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
 	}
 }
 
@@ -220,7 +220,7 @@ func (s *Server) handleFiles(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, FilesPage{Entries: entries, Next: next})
 }
 
-// handleTree renvoie en NDJSON tous les fichiers sous un chemin.
+// handleTree returns, as NDJSON, every file under a path.
 func (s *Server) handleTree(w http.ResponseWriter, r *http.Request) {
 	p, ok := s.sharePath(w, r)
 	if !ok {
@@ -234,13 +234,13 @@ func (s *Server) handleTree(w http.ResponseWriter, r *http.Request) {
 	enc := json.NewEncoder(w)
 	err := s.Index.Tree(r.Context(), p, func(e index.Entry) error { return enc.Encode(e) })
 	if err != nil {
-		// Les en-têtes sont partis : on coupe, le client verra un flux tronqué.
-		s.log().Warn("arborescence interrompue", "path", p, "err", err)
+		// Headers are already sent: abort, the client will see a truncated stream.
+		s.log().Warn("tree interrupted", "path", p, "err", err)
 		panic(http.ErrAbortHandler)
 	}
 }
 
-// handleFile sert un fichier avec Range et If-Range, bridé par les limites d'upload.
+// handleFile serves a file with Range and If-Range, throttled by the upload limits.
 func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
 	p, ok := s.sharePath(w, r)
 	if !ok {
@@ -249,7 +249,7 @@ func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
 	release, retry, ok := s.Uploads.Acquire()
 	if !ok {
 		w.Header().Set("Retry-After", strconv.Itoa(int(retry/time.Second)))
-		writeError(w, http.StatusServiceUnavailable, "uploads indisponibles, réessayer plus tard")
+		writeError(w, http.StatusServiceUnavailable, "uploads unavailable, retry later")
 		return
 	}
 	defer release()
@@ -260,20 +260,20 @@ func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
 	}
 	defer f.Close()
 	m, _ := MemberFrom(r.Context())
-	s.log().Info("envoi", "member", m.Name, "path", p, "range", r.Header.Get("Range"))
+	s.log().Info("sending", "member", m.Name, "path", p, "range", r.Header.Get("Range"))
 	w.Header().Set("ETag", ETag(info.Size(), info.ModTime()))
 	w.Header().Set(MtimeHeader, strconv.FormatInt(info.ModTime().UnixNano(), 10))
 	w.Header().Set("Content-Type", "application/octet-stream")
 	http.ServeContent(w, r, "", info.ModTime(), s.Uploads.Reader(r.Context(), f))
 }
 
-// ETag identifie une version d'un fichier : taille et date en nanosecondes.
+// ETag identifies a file version: size and time in nanoseconds.
 func ETag(size int64, mtime time.Time) string {
 	return `"` + strconv.FormatInt(size, 10) + "-" + strconv.FormatInt(mtime.UnixNano(), 10) + `"`
 }
 
-// Serve sert l'API sur l'écouteur du tunnel jusqu'à l'annulation de ctx, puis
-// laisse 10 s aux requêtes en cours.
+// Serve serves the API on the tunnel listener until ctx is cancelled, then
+// gives in-flight requests 10 s.
 func (s *Server) Serve(ctx context.Context, l net.Listener) error {
 	srv := &http.Server{
 		Handler:           s.Handler(),

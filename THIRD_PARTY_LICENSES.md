@@ -1,6 +1,6 @@
-# Licences des composants tiers
+# Third-party licenses
 
-Le binaire `cercle` et l'image Docker incluent les modules suivants. Leurs licences sont reproduites ci-dessous, comme elles l'exigent. Le compilateur et la bibliothèque standard de Go sont sous licence BSD (https://go.dev/LICENSE).
+The `cercle` binary and the Docker image include the following modules. Their licenses are reproduced below, as they require. The Go compiler and standard library are under the BSD license (https://go.dev/LICENSE).
 
 - `github.com/dustin/go-humanize` v1.1.0
 - `github.com/google/btree` v1.1.2

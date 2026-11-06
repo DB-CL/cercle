@@ -15,13 +15,12 @@ import (
 	"github.com/DB-CL/cercle/internal/wg"
 )
 
-// TestQueueThroughTunnel : version réduite du critère « un dossier de 10 000
-// fichiers se met en file en un clic et se télécharge entièrement, avec des
-// sommes de contrôle identiques », à travers WireGuard. CERCLE_QUEUE_FILES pour
-// changer le nombre de fichiers.
+// TestQueueThroughTunnel: scaled-down version of the criterion "a folder of
+// 10,000 files is queued in one click and fully downloaded with identical
+// checksums", through WireGuard. CERCLE_QUEUE_FILES changes the file count.
 func TestQueueThroughTunnel(t *testing.T) {
 	if testing.Short() {
-		t.Skip("ignoré avec -short")
+		t.Skip("skipped with -short")
 	}
 	n := 500
 	if v, err := strconv.Atoi(os.Getenv("CERCLE_QUEUE_FILES")); err == nil && v > 0 {
@@ -75,7 +74,7 @@ func TestQueueThroughTunnel(t *testing.T) {
 	added, skipped, err := m.Enqueue(ctx, aliceID, []string{"photos"})
 	must(err)
 	if added != n+1 || skipped != 0 {
-		t.Fatalf("ajoutés %d, refusés %d ; attendu %d et 0", added, skipped, n+1)
+		t.Fatalf("added %d, refused %d; want %d and 0", added, skipped, n+1)
 	}
 	enqueued := time.Since(start)
 	deadline := time.Now().Add(5 * time.Minute)
@@ -85,7 +84,7 @@ func TestQueueThroughTunnel(t *testing.T) {
 		left := 0
 		for _, it := range items {
 			if it.Status == transfer.Failed {
-				t.Fatalf("élément en erreur : %+v", it)
+				t.Fatalf("item in error: %+v", it)
 			}
 			if it.Status != transfer.Done {
 				left++
@@ -95,11 +94,11 @@ func TestQueueThroughTunnel(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("%d éléments restants après 5 min", left)
+			t.Fatalf("%d items left after 5 min", left)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	t.Logf("%d fichiers : mise en file %v, téléchargement complet %v", n+1, enqueued.Round(time.Millisecond), time.Since(start).Round(time.Millisecond))
+	t.Logf("%d files: queued in %v, fully downloaded in %v", n+1, enqueued.Round(time.Millisecond), time.Since(start).Round(time.Millisecond))
 	mcancel()
 	must(<-runDone)
 
@@ -109,7 +108,7 @@ func TestQueueThroughTunnel(t *testing.T) {
 			t.Fatal(err)
 		}
 		if sha256.Sum256(got) != sha256.Sum256(want) {
-			t.Fatalf("%s : somme de contrôle différente", rel)
+			t.Fatalf("%s: checksum mismatch", rel)
 		}
 	}
 	cancel()

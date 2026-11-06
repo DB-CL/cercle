@@ -20,29 +20,29 @@ import (
 	"time"
 )
 
-// Connexion à l'interface : un mot de passe (UI_PASSWORD) saisi dans la page,
-// puis un cookie de session signé.
+// Interface login: a password (UI_PASSWORD) typed in the page, then a signed
+// session cookie.
 //
-// Le cookie vaut « <expiration>.<signature> », signé en HMAC-SHA256 avec une
-// clé dérivée d'un secret propre au nœud (stocké en base) ET du mot de passe :
-// changer UI_PASSWORD invalide toutes les sessions. Rien n'est stocké par
-// session. HttpOnly, SameSite=Strict, Secure derrière HTTPS.
+// The cookie is "<expiry>.<signature>", signed with HMAC-SHA256 using a key
+// derived from a node-specific secret (stored in the database) AND the
+// password: changing UI_PASSWORD invalidates every session. Nothing is stored
+// per session. HttpOnly, SameSite=Strict, Secure behind HTTPS.
 //
-// L'authentification Basic reste acceptée pour les scripts (curl), mais
-// l'interface n'envoie jamais WWW-Authenticate : le navigateur n'affiche plus
-// sa fenêtre de connexion.
+// Basic authentication is still accepted for scripts (curl), but the
+// interface never sends WWW-Authenticate: the browser no longer shows its
+// login dialog.
 
 const (
 	sessionCookie   = "cercle_session"
-	sessionRemember = 30 * 24 * time.Hour // « Rester connecté »
-	sessionDefault  = 12 * time.Hour      // sinon : cookie de session du navigateur
+	sessionRemember = 30 * 24 * time.Hour // "Stay signed in"
+	sessionDefault  = 12 * time.Hour      // otherwise: browser session cookie
 	settingSecret   = "ui.session_secret"
 )
 
 type authState struct {
 	once     sync.Once
-	key      []byte     // clé de signature des sessions
-	loginMu  sync.Mutex // un essai à la fois : la recherche par force brute est sérialisée
+	key      []byte     // session signing key
+	loginMu  sync.Mutex // one attempt at a time: brute force is serialized
 	failWait time.Duration
 }
 
@@ -56,7 +56,7 @@ func (s *Server) sessionKey() []byte {
 			_, _ = rand.Read(b)
 			secret = hex.EncodeToString(b)
 			if err := st.SetSetting(ctx, settingSecret, secret); err != nil && s.Logger != nil {
-				s.Logger.Error("enregistrement du secret de session", "err", err)
+				s.Logger.Error("storing the session secret", "err", err)
 			}
 		}
 		m := hmac.New(sha256.New, []byte(secret))
@@ -97,8 +97,8 @@ func (s *Server) validBasic(r *http.Request) bool {
 	return subtle.ConstantTimeCompare(got[:], want[:]) == 1
 }
 
-// public dit si un chemin est accessible sans être connecté : la page et ses
-// fichiers (sans secret), la connexion elle-même et le healthcheck.
+// public reports whether a path is reachable without being signed in: the
+// page and its files (no secrets), the login itself and the healthcheck.
 func public(path string) bool {
 	if !strings.HasPrefix(path, "/ui/api/") {
 		return true
@@ -106,7 +106,7 @@ func public(path string) bool {
 	return path == "/ui/api/login" || path == "/ui/api/logout"
 }
 
-// auth protège l'API si un mot de passe est défini.
+// auth protects the API when a password is set.
 func (s *Server) auth(next http.Handler) http.Handler {
 	if s.Password == "" {
 		return next
@@ -116,7 +116,7 @@ func (s *Server) auth(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "connexion requise", "login": true})
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "login required", "login": true})
 	})
 }
 
@@ -134,7 +134,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		Remember bool   `json:"remember"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "demande illisible")
+		writeError(w, http.StatusBadRequest, "unreadable request")
 		return
 	}
 	s.sessionKey()
@@ -143,10 +143,10 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	got, want := sha256.Sum256([]byte(req.Password)), sha256.Sum256([]byte(s.Password))
 	if subtle.ConstantTimeCompare(got[:], want[:]) != 1 {
 		if s.Logger != nil {
-			s.Logger.Warn("mot de passe de l'interface incorrect", "remote", r.RemoteAddr, "forwarded_for", r.Header.Get("X-Forwarded-For"))
+			s.Logger.Warn("wrong interface password", "remote", r.RemoteAddr, "forwarded_for", r.Header.Get("X-Forwarded-For"))
 		}
-		time.Sleep(s.authState.failWait) // au plus un essai par seconde
-		writeError(w, http.StatusUnauthorized, "Mot de passe incorrect.")
+		time.Sleep(s.authState.failWait) // at most one attempt per second
+		writeError(w, http.StatusUnauthorized, "Wrong password.")
 		return
 	}
 	life := sessionDefault
@@ -170,20 +170,20 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// LoadOrCreatePassword renvoie le mot de passe de l'interface stocké dans
-// path, ou en crée un aléatoire (droits 0600) s'il n'existe pas. Utilisé quand
-// UI_PASSWORD est vide : l'interface n'est jamais ouverte sans mot de passe,
-// car n'importe qui sur le réseau local (ou une page web, par DNS rebinding)
-// pourrait sinon s'inviter dans le cercle.
+// LoadOrCreatePassword returns the interface password stored in path, or
+// creates a random one (mode 0600) if there is none. Used when UI_PASSWORD is
+// empty: the interface is never open without a password, since anyone on the
+// local network (or a web page, through DNS rebinding) could otherwise invite
+// themselves into the circle.
 func LoadOrCreatePassword(path string) (pass string, created bool, err error) {
 	if b, err := os.ReadFile(path); err == nil {
 		if p := strings.TrimSpace(string(b)); p != "" {
 			return p, false, nil
 		}
 	} else if !errors.Is(err, fs.ErrNotExist) {
-		return "", false, fmt.Errorf("lecture de %s : %w", path, err)
+		return "", false, fmt.Errorf("reading %s: %w", path, err)
 	}
-	const alphabet = "abcdefghijkmnpqrstuvwxyz23456789" // sans 0, o, 1, l
+	const alphabet = "abcdefghijkmnpqrstuvwxyz23456789" // no 0, o, 1, l
 	raw := make([]byte, 16)
 	if _, err := rand.Read(raw); err != nil {
 		return "", false, err
@@ -197,7 +197,7 @@ func LoadOrCreatePassword(path string) (pass string, created bool, err error) {
 	}
 	pass = sb.String()
 	if err := os.WriteFile(path, []byte(pass+"\n"), 0o600); err != nil {
-		return "", false, fmt.Errorf("écriture de %s : %w", path, err)
+		return "", false, fmt.Errorf("writing %s: %w", path, err)
 	}
 	return pass, true, nil
 }

@@ -18,41 +18,41 @@ import (
 	"github.com/DB-CL/cercle/internal/store"
 )
 
-// Entry est un fichier ou un dossier du partage.
+// Entry is a file or folder of the share.
 type Entry struct {
 	Path      string `json:"path"`
 	Name      string `json:"name"`
 	IsDir     bool   `json:"is_dir"`
-	Size      int64  `json:"size"`     // taille cumulée pour un dossier
-	MTimeNano int64  `json:"mtime_ns"` // nanosecondes Unix
+	Size      int64  `json:"size"`     // cumulated size for a folder
+	MTimeNano int64  `json:"mtime_ns"` // Unix nanoseconds
 	FileCount int64  `json:"file_count,omitempty"`
 }
 
-// ModTime renvoie la date de modification.
+// ModTime returns the modification time.
 func (e Entry) ModTime() time.Time { return time.Unix(0, e.MTimeNano) }
 
-// Stats résume un scan.
+// Stats summarizes a scan.
 type Stats struct {
 	Files, Dirs, Skipped int64
 	Size                 int64
 	Duration             time.Duration
 }
 
-// Index est l'index du dossier partagé.
+// Index is the shared folder's index.
 type Index struct {
 	st       *store.Store
 	dir      string
 	excludes []string
 	log      *slog.Logger
-	scanMu   sync.Mutex // un seul scan à la fois
+	scanMu   sync.Mutex // one scan at a time
 	trigger  chan struct{}
 
-	// OnScan est appelé à la fin de chaque scan réussi (notification de l'interface).
+	// OnScan is called after every successful scan (interface notification).
 	OnScan func()
 }
 
-// New prépare l'index du dossier dir. excludes sont des motifs glob (path.Match)
-// testés sur le nom et sur le chemin relatif.
+// New prepares the index of folder dir. excludes are glob patterns
+// (path.Match) tested against the name and the relative path.
 func New(st *store.Store, dir string, excludes []string, log *slog.Logger) *Index {
 	if log == nil {
 		log = slog.Default()
@@ -60,8 +60,8 @@ func New(st *store.Store, dir string, excludes []string, log *slog.Logger) *Inde
 	return &Index{st: st, dir: dir, excludes: excludes, log: log.With("module", "index"), trigger: make(chan struct{}, 1)}
 }
 
-// Run lance un scan tout de suite, puis toutes les interval, et à chaque
-// TriggerScan, jusqu'à l'annulation de ctx.
+// Run scans right away, then every interval and on every TriggerScan, until
+// ctx is cancelled.
 func (ix *Index) Run(ctx context.Context, interval time.Duration) {
 	t := time.NewTicker(interval)
 	defer t.Stop()
@@ -71,12 +71,12 @@ func (ix *Index) Run(ctx context.Context, interval time.Duration) {
 		case ctx.Err() != nil:
 			return
 		case err != nil:
-			ix.log.Error("scan du partage en échec", "err", err)
+			ix.log.Error("share scan failed", "err", err)
 		default:
 			if ix.OnScan != nil {
 				ix.OnScan()
 			}
-			ix.log.Info("scan du partage terminé", "files", st.Files, "dirs", st.Dirs, "size", st.Size, "skipped", st.Skipped, "duration", st.Duration.Round(time.Millisecond).String())
+			ix.log.Info("share scan finished", "files", st.Files, "dirs", st.Dirs, "size", st.Size, "skipped", st.Skipped, "duration", st.Duration.Round(time.Millisecond).String())
 		}
 		select {
 		case <-ctx.Done():
@@ -87,7 +87,7 @@ func (ix *Index) Run(ctx context.Context, interval time.Duration) {
 	}
 }
 
-// TriggerScan demande un scan sans attendre.
+// TriggerScan requests a scan without waiting.
 func (ix *Index) TriggerScan() {
 	select {
 	case ix.trigger <- struct{}{}:
@@ -95,11 +95,11 @@ func (ix *Index) TriggerScan() {
 	}
 }
 
-// excluded dit si une entrée est exclue du partage.
+// excluded reports whether an entry is excluded from the share.
 func (ix *Index) excluded(rel, name string) bool {
 	switch {
 	case strings.HasPrefix(name, "."), name == "@eaDir", name == "#recycle", name == "$RECYCLE.BIN":
-		return true // .Trash-* commence aussi par un point
+		return true // .Trash-* also starts with a dot
 	}
 	for _, pat := range ix.excludes {
 		if ok, _ := path.Match(pat, name); ok {
@@ -112,7 +112,7 @@ func (ix *Index) excluded(rel, name string) bool {
 	return false
 }
 
-// dirAcc accumule la taille et le nombre de fichiers d'un dossier en cours de parcours.
+// dirAcc accumulates the size and file count of the folder being walked.
 type dirAcc struct {
 	path  string
 	mtime int64
@@ -122,9 +122,9 @@ type dirAcc struct {
 
 const batchRows = 2000
 
-// Scan parcourt le partage et met l'index à jour. Il ne lit jamais le contenu
-// des fichiers : seulement les métadonnées (taille, date). Une seule goroutine,
-// pour ne pas saturer les disques du NAS.
+// Scan walks the share and updates the index. It never reads file contents,
+// only metadata (size, date). A single goroutine, so as not to saturate the
+// NAS disks.
 func (ix *Index) Scan(ctx context.Context) (Stats, error) {
 	ix.scanMu.Lock()
 	defer ix.scanMu.Unlock()
@@ -133,13 +133,13 @@ func (ix *Index) Scan(ctx context.Context) (Stats, error) {
 
 	root, err := os.OpenRoot(ix.dir)
 	if err != nil {
-		return st, fmt.Errorf("ouverture du partage %s : %w", ix.dir, err)
+		return st, fmt.Errorf("opening the share %s: %w", ix.dir, err)
 	}
 	defer root.Close()
 	fsys := root.FS()
 	rootInfo, err := fs.Stat(fsys, ".")
 	if err != nil {
-		return st, fmt.Errorf("lecture du partage %s : %w", ix.dir, err)
+		return st, fmt.Errorf("reading the share %s: %w", ix.dir, err)
 	}
 
 	sel, err := ix.Selection(ctx)
@@ -149,14 +149,14 @@ func (ix *Index) Scan(ctx context.Context) (Stats, error) {
 
 	var gen int64
 	if err := ix.st.W.QueryRowContext(ctx, "SELECT COALESCE(MAX(scan_gen), 0) + 1 FROM files").Scan(&gen); err != nil {
-		return st, fmt.Errorf("génération de scan : %w", err)
+		return st, fmt.Errorf("scan generation: %w", err)
 	}
 
 	w := &batchWriter{ctx: ctx, db: ix.st.W, gen: gen}
 	defer w.abort()
 
 	stack := []*dirAcc{{path: "", mtime: rootInfo.ModTime().UnixNano()}}
-	// closeDir écrit la ligne du dossier au sommet de la pile et remonte ses totaux.
+	// closeDir writes the row of the folder on top of the stack and propagates its totals.
 	closeDir := func() error {
 		top := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
@@ -174,10 +174,10 @@ func (ix *Index) Scan(ctx context.Context) (Stats, error) {
 			return ctx.Err()
 		}
 		if p == "." {
-			return err // racine illisible : abandon
+			return err // unreadable root: give up
 		}
 		if err != nil {
-			ix.log.Warn("entrée illisible ignorée", "path", p, "err", err)
+			ix.log.Warn("unreadable entry skipped", "path", p, "err", err)
 			st.Skipped++
 			if d != nil && d.IsDir() {
 				return fs.SkipDir
@@ -193,7 +193,7 @@ func (ix *Index) Scan(ctx context.Context) (Stats, error) {
 		}
 		parent := parentOf(p)
 		if parent == "" && !sel.Shares(d.Name()) {
-			// Premier niveau non coché dans les réglages : ni indexé ni servi.
+			// First-level entry not ticked in the settings: neither indexed nor served.
 			if d.IsDir() {
 				return fs.SkipDir
 			}
@@ -208,10 +208,10 @@ func (ix *Index) Scan(ctx context.Context) (Stats, error) {
 		var info fs.FileInfo
 		switch {
 		case d.Type()&fs.ModeSymlink != 0:
-			// os.Root ne suit un lien que s'il reste dans le partage ; sinon erreur.
+			// os.Root only follows a link that stays inside the share; otherwise it errors.
 			info, err = fs.Stat(fsys, p)
 			if err != nil || !info.Mode().IsRegular() {
-				// Lien sortant, cassé, ou vers un dossier (risque de boucle) : ignoré.
+				// Escaping, broken, or pointing to a folder (loop risk): skipped.
 				st.Skipped++
 				return nil
 			}
@@ -230,7 +230,7 @@ func (ix *Index) Scan(ctx context.Context) (Stats, error) {
 				return nil
 			}
 		default:
-			st.Skipped++ // socket, périphérique, tube
+			st.Skipped++ // socket, device, pipe
 			return nil
 		}
 		top := stack[len(stack)-1]
@@ -240,14 +240,14 @@ func (ix *Index) Scan(ctx context.Context) (Stats, error) {
 		return w.put(Entry{Path: p, Size: info.Size(), MTimeNano: info.ModTime().UnixNano()})
 	})
 	if walkErr != nil {
-		return st, fmt.Errorf("parcours du partage : %w", walkErr)
+		return st, fmt.Errorf("walking the share: %w", walkErr)
 	}
 	for len(stack) > 0 {
 		if err := closeDir(); err != nil {
-			return st, fmt.Errorf("parcours du partage : %w", err)
+			return st, fmt.Errorf("walking the share: %w", err)
 		}
 	}
-	st.Dirs-- // la racine n'est pas un dossier du partage
+	st.Dirs-- // the root is not a folder of the share
 	if err := w.finish(); err != nil {
 		return st, err
 	}
@@ -260,8 +260,8 @@ func (ix *Index) Scan(ctx context.Context) (Stats, error) {
 	return st, nil
 }
 
-// batchWriter écrit l'index par transactions de batchRows lignes, puis
-// supprime ce que le scan n'a pas revu.
+// batchWriter writes the index in transactions of batchRows rows, then
+// deletes what the scan did not see again.
 type batchWriter struct {
 	ctx  context.Context
 	db   *sql.DB
@@ -275,7 +275,7 @@ func (w *batchWriter) put(e Entry) error {
 	if w.tx == nil {
 		tx, err := w.db.BeginTx(w.ctx, nil)
 		if err != nil {
-			return fmt.Errorf("écriture de l'index : %w", err)
+			return fmt.Errorf("writing the index: %w", err)
 		}
 		stmt, err := tx.PrepareContext(w.ctx, `INSERT INTO files (path, parent, name, is_dir, size, mtime, file_count, scan_gen)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -283,7 +283,7 @@ func (w *batchWriter) put(e Entry) error {
 				mtime = excluded.mtime, file_count = excluded.file_count, scan_gen = excluded.scan_gen`)
 		if err != nil {
 			tx.Rollback()
-			return fmt.Errorf("écriture de l'index : %w", err)
+			return fmt.Errorf("writing the index: %w", err)
 		}
 		w.tx, w.stmt = tx, stmt
 	}
@@ -292,7 +292,7 @@ func (w *batchWriter) put(e Entry) error {
 		name = ""
 	}
 	if _, err := w.stmt.ExecContext(w.ctx, e.Path, parentOf(e.Path), name, e.IsDir, e.Size, e.MTimeNano, e.FileCount, w.gen); err != nil {
-		return fmt.Errorf("écriture de l'index (%s) : %w", e.Path, err)
+		return fmt.Errorf("writing the index (%s): %w", e.Path, err)
 	}
 	w.n++
 	if w.n >= batchRows {
@@ -309,7 +309,7 @@ func (w *batchWriter) commit() error {
 	err := w.tx.Commit()
 	w.tx, w.stmt, w.n = nil, nil, 0
 	if err != nil {
-		return fmt.Errorf("écriture de l'index : %w", err)
+		return fmt.Errorf("writing the index: %w", err)
 	}
 	return nil
 }
@@ -319,7 +319,7 @@ func (w *batchWriter) finish() error {
 		return err
 	}
 	if _, err := w.db.ExecContext(w.ctx, "DELETE FROM files WHERE scan_gen < ?", w.gen); err != nil {
-		return fmt.Errorf("purge de l'index : %w", err)
+		return fmt.Errorf("purging the index: %w", err)
 	}
 	return nil
 }
@@ -340,23 +340,23 @@ func scanEntry(row interface{ Scan(...any) error }) (Entry, error) {
 	return e, err
 }
 
-// Lookup renvoie l'entrée d'un chemin normalisé ("" = racine).
+// Lookup returns the entry of a normalized path ("" = root).
 func (ix *Index) Lookup(ctx context.Context, p string) (Entry, error) {
 	e, err := scanEntry(ix.st.R.QueryRowContext(ctx, "SELECT "+entryCols+" FROM files WHERE path = ?", p))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Entry{}, ErrNotFound
 	}
 	if err != nil {
-		return Entry{}, fmt.Errorf("lecture de l'index : %w", err)
+		return Entry{}, fmt.Errorf("reading the index: %w", err)
 	}
 	return e, nil
 }
 
-// PageSize est la taille d'une page de List.
+// PageSize is the size of a List page.
 const PageSize = 500
 
-// List renvoie une page du contenu d'un dossier, dossiers d'abord puis par
-// nom. next est vide sur la dernière page.
+// List returns a page of a folder's contents, folders first then by name.
+// next is empty on the last page.
 func (ix *Index) List(ctx context.Context, dir, cursor string, limit int) (entries []Entry, next string, err error) {
 	if limit <= 0 || limit > PageSize {
 		limit = PageSize
@@ -366,7 +366,7 @@ func (ix *Index) List(ctx context.Context, dir, cursor string, limit int) (entri
 		return nil, "", err
 	}
 	if !d.IsDir {
-		return nil, "", fmt.Errorf("%s n'est pas un dossier : %w", dir, ErrNotFound)
+		return nil, "", fmt.Errorf("%s is not a folder: %w", dir, ErrNotFound)
 	}
 	q := "SELECT " + entryCols + " FROM files WHERE parent = ? AND path <> ''"
 	args := []any{dir}
@@ -383,18 +383,18 @@ func (ix *Index) List(ctx context.Context, dir, cursor string, limit int) (entri
 	args = append(args, limit+1)
 	rows, err := ix.st.R.QueryContext(ctx, q, args...)
 	if err != nil {
-		return nil, "", fmt.Errorf("lecture de l'index : %w", err)
+		return nil, "", fmt.Errorf("reading the index: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		e, err := scanEntry(rows)
 		if err != nil {
-			return nil, "", fmt.Errorf("lecture de l'index : %w", err)
+			return nil, "", fmt.Errorf("reading the index: %w", err)
 		}
 		entries = append(entries, e)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, "", fmt.Errorf("lecture de l'index : %w", err)
+		return nil, "", fmt.Errorf("reading the index: %w", err)
 	}
 	if len(entries) > limit {
 		entries = entries[:limit]
@@ -415,13 +415,13 @@ func encodeCursor(isDir bool, name string) string {
 func decodeCursor(c string) (isDir bool, name string, err error) {
 	b, err := base64.RawURLEncoding.DecodeString(c)
 	if err != nil || len(b) < 2 || (b[0] != 'd' && b[0] != 'f') || b[1] != ':' {
-		return false, "", fmt.Errorf("curseur invalide : %w", ErrBadPath)
+		return false, "", fmt.Errorf("invalid cursor: %w", ErrBadPath)
 	}
 	return b[0] == 'd', string(b[2:]), nil
 }
 
-// Tree appelle fn pour chaque fichier sous p (p lui-même si c'est un fichier),
-// dans l'ordre des chemins.
+// Tree calls fn for every file under p (p itself if it is a file), in path
+// order.
 func (ix *Index) Tree(ctx context.Context, p string, fn func(Entry) error) error {
 	e, err := ix.Lookup(ctx, p)
 	if err != nil {
@@ -433,20 +433,20 @@ func (ix *Index) Tree(ctx context.Context, p string, fn func(Entry) error) error
 	q := "SELECT " + entryCols + " FROM files WHERE is_dir = 0"
 	var args []any
 	if p != "" {
-		// Tous les chemins qui commencent par "p/" : "0" suit "/" en ASCII.
+		// Every path starting with "p/": "0" follows "/" in ASCII.
 		q += " AND path > ? AND path < ?"
 		args = append(args, p+"/", p+"0")
 	}
 	q += " ORDER BY path"
 	rows, err := ix.st.R.QueryContext(ctx, q, args...)
 	if err != nil {
-		return fmt.Errorf("lecture de l'index : %w", err)
+		return fmt.Errorf("reading the index: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		e, err := scanEntry(rows)
 		if err != nil {
-			return fmt.Errorf("lecture de l'index : %w", err)
+			return fmt.Errorf("reading the index: %w", err)
 		}
 		if err := fn(e); err != nil {
 			return err
@@ -455,8 +455,8 @@ func (ix *Index) Tree(ctx context.Context, p string, fn func(Entry) error) error
 	return rows.Err()
 }
 
-// Totals renvoie la taille et le nombre de fichiers partagés, et la date du
-// dernier scan (nil si aucun).
+// Totals returns the shared size and file count, and the time of the last
+// scan (nil if none).
 func (ix *Index) Totals(ctx context.Context) (size, files int64, lastScan *time.Time) {
 	_ = ix.st.R.QueryRowContext(ctx, "SELECT size, file_count FROM files WHERE path = ''").Scan(&size, &files)
 	if v, ok, err := ix.st.Setting(ctx, "index.last_scan"); ok && err == nil {
@@ -468,28 +468,28 @@ func (ix *Index) Totals(ctx context.Context) (size, files int64, lastScan *time.
 	return size, files, lastScan
 }
 
-// Open ouvre un fichier indexé pour le servir. Le chemin doit figurer dans
-// l'index (un fichier exclu ou caché est introuvable, même si l'on devine son
-// nom), et os.Root interdit toute sortie du partage, liens symboliques compris.
+// Open opens an indexed file to serve it. The path must be in the index (an
+// excluded or hidden file is not found, even if its name is guessed), and
+// os.Root prevents escaping the share, symlinks included.
 func (ix *Index) Open(ctx context.Context, p string) (*os.File, fs.FileInfo, error) {
 	e, err := ix.Lookup(ctx, p)
 	if err != nil {
 		return nil, nil, err
 	}
 	if e.IsDir {
-		return nil, nil, fmt.Errorf("%s est un dossier : %w", p, ErrNotFound)
+		return nil, nil, fmt.Errorf("%s is a folder: %w", p, ErrNotFound)
 	}
 	root, err := os.OpenRoot(ix.dir)
 	if err != nil {
-		return nil, nil, fmt.Errorf("ouverture du partage : %w", err)
+		return nil, nil, fmt.Errorf("opening the share: %w", err)
 	}
-	defer root.Close() // le fichier ouvert reste valide après la fermeture de Root
+	defer root.Close() // the opened file stays valid after Root is closed
 	f, err := root.Open(p)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil, ErrNotFound
 	}
 	if err != nil {
-		return nil, nil, fmt.Errorf("%w : %v", ErrBadPath, err)
+		return nil, nil, fmt.Errorf("%w: %v", ErrBadPath, err)
 	}
 	info, err := f.Stat()
 	if err != nil || !info.Mode().IsRegular() {

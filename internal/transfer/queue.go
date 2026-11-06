@@ -22,20 +22,20 @@ import (
 	"github.com/DB-CL/cercle/internal/store"
 )
 
-// Status est l'état d'un élément de la file.
+// Status is the state of a queue item.
 type Status string
 
-// États d'un élément.
+// Item states.
 const (
 	Queued  Status = "queued"
 	Active  Status = "active"
 	Paused  Status = "paused"
-	Waiting Status = "waiting" // pair indisponible, nouvel essai programmé
+	Waiting Status = "waiting" // peer unavailable, retry scheduled
 	Done    Status = "done"
 	Failed  Status = "error"
 )
 
-// Item est un fichier distant à télécharger.
+// Item is a remote file to download.
 type Item struct {
 	ID          int64     `json:"id"`
 	PeerID      string    `json:"peer_id"`
@@ -52,45 +52,45 @@ type Item struct {
 	NextAttempt time.Time `json:"next_attempt"`
 	LastError   string    `json:"last_error,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
-	Rate        float64   `json:"rate,omitempty"` // octets/s, éléments actifs seulement
+	Rate        float64   `json:"rate,omitempty"` // bytes/s, active items only
 }
 
-// Peer est un pair joignable : son identité et son adresse de tunnel.
+// Peer is a reachable peer: its identity and tunnel address.
 type Peer struct {
 	ID   string
 	Name string
 	IP   netip.Addr
 }
 
-// Remote parle aux autres nœuds (implémenté par peerapi.Client).
+// Remote talks to the other nodes (implemented by peerapi.Client).
 type Remote interface {
 	Tree(ctx context.Context, peer netip.Addr, dir string, fn func(index.Entry) error) error
 	Download(ctx context.Context, peer netip.Addr, path string, offset int64, etag string) (*http.Response, error)
 }
 
-// statusError est une réponse HTTP non 2xx d'un pair (peerapi.StatusError).
+// statusError is a non-2xx HTTP response from a peer (peerapi.StatusError).
 type statusError interface {
 	HTTPStatus() int
 	RetryDelay() time.Duration
 }
 
-// Options configure un Manager.
+// Options configures a Manager.
 type Options struct {
 	Store       *store.Store
 	Remote      Remote
 	Peers       func(id string) (Peer, bool)
-	Dir         string // dossier des téléchargements
+	Dir         string // downloads folder
 	Concurrency int
-	Limit       int64 // octets/s, 0 = illimité
+	Limit       int64 // bytes/s, 0 = unlimited
 	Window      *config.Window
 	Logger      *slog.Logger
-	OnChange    func() // appelé à chaque changement d'état (flux SSE de l'interface)
+	OnChange    func() // called on every state change (interface SSE stream)
 
-	// BackoffBase et BackoffMax : 30 s et 15 min par défaut, réduits dans les tests.
+	// BackoffBase and BackoffMax: 30 s and 15 min by default, shorter in tests.
 	BackoffBase, BackoffMax time.Duration
 }
 
-// Manager vide la file en arrière-plan.
+// Manager drains the queue in the background.
 type Manager struct {
 	opt     Options
 	log     *slog.Logger
@@ -102,7 +102,7 @@ type Manager struct {
 	concurrency int
 	window      *config.Window
 	jobs        map[int64]*job
-	busy        map[string]bool // pairs en cours de transfert (1 au plus par pair)
+	busy        map[string]bool // peers with a transfer in progress (at most 1 per peer)
 	wg          sync.WaitGroup
 }
 
@@ -118,13 +118,13 @@ const (
 type job struct {
 	cancel      context.CancelFunc
 	peer        string
-	done        atomic.Int64 // octets présents dans le .part
-	startOffset atomic.Int64 // octets déjà là au début de cette tentative
-	start       atomic.Int64 // début de la tentative, nanosecondes Unix
+	done        atomic.Int64 // bytes present in the partial file
+	startOffset atomic.Int64 // bytes already there when this attempt started
+	start       atomic.Int64 // attempt start, Unix nanoseconds
 	reason      atomic.Int32
 }
 
-// NewManager prépare la file ; Run la fait tourner.
+// NewManager prepares the queue; Run drives it.
 func NewManager(opt Options) *Manager {
 	if opt.BackoffBase == 0 {
 		opt.BackoffBase = 30 * time.Second
@@ -150,7 +150,7 @@ func NewManager(opt Options) *Manager {
 	return m
 }
 
-// SetLimit change le débit total de téléchargement (0 = illimité).
+// SetLimit changes the total download rate (0 = unlimited).
 func (m *Manager) SetLimit(bps int64) {
 	if bps <= 0 {
 		m.limiter.SetLimit(rate.Inf)
@@ -159,7 +159,7 @@ func (m *Manager) SetLimit(bps int64) {
 	}
 }
 
-// SetConcurrency change le nombre de téléchargements simultanés.
+// SetConcurrency changes the number of concurrent downloads.
 func (m *Manager) SetConcurrency(n int) {
 	if n < 1 {
 		n = 1
@@ -170,8 +170,8 @@ func (m *Manager) SetConcurrency(n int) {
 	m.poke()
 }
 
-// SetWindow change le créneau de téléchargement (nil = toujours ouvert).
-// Un transfert en cours à la fermeture du créneau va à son terme.
+// SetWindow changes the download window (nil = always open). A transfer in
+// progress when the window closes runs to completion.
 func (m *Manager) SetWindow(w *config.Window) {
 	m.mu.Lock()
 	m.window = w
@@ -192,7 +192,7 @@ func (m *Manager) changed() {
 	}
 }
 
-// Backoff renvoie le délai avant la tentative suivante : base, puis ×2, plafonné.
+// Backoff returns the delay before the next attempt: base, then doubling, capped.
 func Backoff(attempts int, base, max time.Duration) time.Duration {
 	d := base
 	for i := 1; i < attempts && d < max; i++ {
@@ -201,8 +201,8 @@ func Backoff(attempts int, base, max time.Duration) time.Duration {
 	return min(d, max)
 }
 
-// SafeName transforme un nom de pair en nom de dossier sûr : jamais de
-// séparateur, de caractère de contrôle, de « . » ou « .. ».
+// SafeName turns a peer name into a safe folder name: never a separator, a
+// control character, "." or "..".
 func SafeName(name, id string) string {
 	var b strings.Builder
 	for _, r := range strings.TrimSpace(name) {
@@ -220,7 +220,7 @@ func SafeName(name, id string) string {
 		if len(short) > 8 {
 			short = short[:8]
 		}
-		s = "pair-" + strings.NewReplacer("/", "_", "+", "-").Replace(short)
+		s = "peer-" + strings.NewReplacer("/", "_", "+", "-").Replace(short)
 	}
 	if len(s) > 100 {
 		s = s[:100]
@@ -230,26 +230,26 @@ func SafeName(name, id string) string {
 
 func nano(t time.Time) int64 { return t.UnixNano() }
 
-// Enqueue ajoute des chemins distants (fichiers ou dossiers, développés
-// récursivement) d'un pair. Un fichier déjà présent avec la même taille est
-// marqué terminé sans transfert ; un chemin refusé est compté dans skipped.
+// Enqueue adds remote paths (files or folders, expanded recursively) of a
+// peer. A file already present with the same size is marked done without a
+// transfer; a refused path is counted in skipped.
 func (m *Manager) Enqueue(ctx context.Context, peerID string, paths []string) (added, skipped int, err error) {
 	peer, ok := m.opt.Peers(peerID)
 	if !ok {
-		return 0, 0, fmt.Errorf("pair inconnu : %s", peerID)
+		return 0, 0, fmt.Errorf("unknown peer: %s", peerID)
 	}
 	folder := SafeName(peer.Name, peer.ID)
 	root, err := os.OpenRoot(m.opt.Dir)
 	if err != nil {
-		return 0, 0, fmt.Errorf("dossier des téléchargements : %w", err)
+		return 0, 0, fmt.Errorf("downloads folder: %w", err)
 	}
 	defer root.Close()
 
-	// Les fichiers reçus du pair sont écrits par lots, chacun dans une
-	// transaction courte : jamais de transaction ouverte pendant un appel
-	// réseau. Sinon, l'unique connexion d'écriture resterait prise pendant que
-	// le client attend le verrou du cercle, que tient justement une mise à
-	// jour de fiche en attente de cette même connexion (interblocage).
+	// Files received from the peer are written in batches, each in a short
+	// transaction: never a transaction open across a network call. Otherwise
+	// the single write connection would stay taken while the client waits for
+	// the circle lock, held by a record update waiting for that very
+	// connection (deadlock).
 	const batch = 1000
 	pending := make([]index.Entry, 0, batch)
 	flush := func() error {
@@ -268,13 +268,13 @@ func (m *Manager) Enqueue(ctx context.Context, peerID string, paths []string) (a
 			continue
 		}
 		err = m.opt.Remote.Tree(ctx, peer.IP, cp, func(e index.Entry) error {
-			// Le pair peut mentir : chaque chemin reçu est revalidé.
+			// The peer may lie: every received path is revalidated.
 			if added+len(pending) >= maxEnqueue {
-				return fmt.Errorf("plus de %d fichiers en une fois : sélectionnez des dossiers plus petits", maxEnqueue)
+				return fmt.Errorf("more than %d files at once: select smaller folders", maxEnqueue)
 			}
 			rp, err := index.CleanPath(e.Path)
 			if err != nil || rp == "" || e.IsDir || e.Size < 0 || len(rp) > maxPathLen {
-				m.log.Warn("chemin distant refusé", "peer", peer.Name, "path", e.Path)
+				m.log.Warn("remote path refused", "peer", peer.Name, "path", e.Path)
 				skipped++
 				return nil
 			}
@@ -297,26 +297,26 @@ func (m *Manager) Enqueue(ctx context.Context, peerID string, paths []string) (a
 	return added, skipped, nil
 }
 
-// Plafonds de ce qu'un pair peut faire ajouter à la file en une fois.
+// Caps on what a peer can make us queue at once.
 const (
 	maxEnqueue = 1_000_000
 	maxPathLen = 4096
 )
 
-// insertBatch ajoute un lot de fichiers distants, dans une seule transaction.
-// Un fichier déjà présent avec la même taille est marqué terminé sans
-// transfert, sans doublon si la file le connaît déjà.
+// insertBatch adds a batch of remote files in a single transaction. A file
+// already present with the same size is marked done without a transfer, with
+// no duplicate if the queue already knows it.
 func (m *Manager) insertBatch(ctx context.Context, root *os.Root, peer Peer, folder string, entries []index.Entry) (int, error) {
 	tx, err := m.opt.Store.W.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, fmt.Errorf("ajout à la file : %w", err)
+		return 0, fmt.Errorf("queuing: %w", err)
 	}
 	defer tx.Rollback()
 	stmt, err := tx.PrepareContext(ctx, `INSERT OR IGNORE INTO queue
 		(peer_id, peer_name, remote_path, dest_path, size, mtime, etag, status, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
-		return 0, fmt.Errorf("ajout à la file : %w", err)
+		return 0, fmt.Errorf("queuing: %w", err)
 	}
 	defer stmt.Close()
 	now := nano(m.now())
@@ -327,7 +327,7 @@ func (m *Manager) insertBatch(ctx context.Context, root *os.Root, peer Peer, fol
 		if fi, err := root.Stat(dest); err == nil && fi.Mode().IsRegular() && fi.Size() == e.Size {
 			var known int
 			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM queue WHERE peer_id = ? AND remote_path = ?`, peer.ID, e.Path).Scan(&known); err != nil {
-				return added, fmt.Errorf("ajout de %s : %w", e.Path, err)
+				return added, fmt.Errorf("queuing %s: %w", e.Path, err)
 			}
 			if known > 0 {
 				continue
@@ -337,19 +337,19 @@ func (m *Manager) insertBatch(ctx context.Context, root *os.Root, peer Peer, fol
 		res, err := stmt.ExecContext(ctx, peer.ID, peer.Name, e.Path, dest, e.Size, e.MTimeNano,
 			etagOf(e.Size, e.MTimeNano), string(status), now, now)
 		if err != nil {
-			return added, fmt.Errorf("ajout de %s : %w", e.Path, err)
+			return added, fmt.Errorf("queuing %s: %w", e.Path, err)
 		}
 		if n, _ := res.RowsAffected(); n > 0 {
 			added++
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("ajout à la file : %w", err)
+		return 0, fmt.Errorf("queuing: %w", err)
 	}
 	return added, nil
 }
 
-// etagOf reproduit l'ETag du serveur (peerapi.ETag) à partir de l'index.
+// etagOf reproduces the server's ETag (peerapi.ETag) from the index.
 func etagOf(size, mtimeNano int64) string {
 	return fmt.Sprintf(`"%d-%d"`, size, mtimeNano)
 }
@@ -371,36 +371,36 @@ func scanItem(row interface{ Scan(...any) error }) (Item, error) {
 	return it, err
 }
 
-// List renvoie toute la file dans l'ordre de traitement, avec la progression
-// en direct des éléments actifs.
+// List returns the whole queue in processing order, with live progress of the
+// active items.
 func (m *Manager) List(ctx context.Context) ([]Item, error) {
 	rows, err := m.opt.Store.R.QueryContext(ctx, "SELECT "+itemCols+` FROM queue
 		ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'queued' THEN 1 WHEN 'waiting' THEN 2
 		WHEN 'paused' THEN 3 WHEN 'error' THEN 4 ELSE 5 END, priority DESC, created_at, id`)
 	if err != nil {
-		return nil, fmt.Errorf("lecture de la file : %w", err)
+		return nil, fmt.Errorf("reading the queue: %w", err)
 	}
 	defer rows.Close()
 	var items []Item
 	for rows.Next() {
 		it, err := scanItem(rows)
 		if err != nil {
-			return nil, fmt.Errorf("lecture de la file : %w", err)
+			return nil, fmt.Errorf("reading the queue: %w", err)
 		}
 		items = append(items, it)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("lecture de la file : %w", err)
+		return nil, fmt.Errorf("reading the queue: %w", err)
 	}
 	m.withProgress(items)
 	return items, nil
 }
 
-// Get renvoie un élément.
+// Get returns an item.
 func (m *Manager) Get(ctx context.Context, id int64) (Item, error) {
 	it, err := scanItem(m.opt.Store.R.QueryRowContext(ctx, "SELECT "+itemCols+" FROM queue WHERE id = ?", id))
 	if errors.Is(err, sql.ErrNoRows) {
-		return Item{}, fmt.Errorf("élément %d introuvable", id)
+		return Item{}, fmt.Errorf("item %d not found", id)
 	}
 	return it, err
 }
@@ -408,13 +408,13 @@ func (m *Manager) Get(ctx context.Context, id int64) (Item, error) {
 func (m *Manager) exec(ctx context.Context, q string, args ...any) (int64, error) {
 	res, err := m.opt.Store.W.ExecContext(ctx, q, args...)
 	if err != nil {
-		return 0, fmt.Errorf("mise à jour de la file : %w", err)
+		return 0, fmt.Errorf("updating the queue: %w", err)
 	}
 	n, _ := res.RowsAffected()
 	return n, nil
 }
 
-// stopJob interrompt un transfert en cours, s'il y en a un.
+// stopJob interrupts a transfer in progress, if any.
 func (m *Manager) stopJob(id int64, reason stopReason) bool {
 	m.mu.Lock()
 	j, ok := m.jobs[id]
@@ -426,7 +426,7 @@ func (m *Manager) stopJob(id int64, reason stopReason) bool {
 	return ok
 }
 
-// Pause suspend un élément (en attente ou en cours).
+// Pause suspends an item (waiting or in progress).
 func (m *Manager) Pause(ctx context.Context, id int64) error {
 	_, err := m.exec(ctx, `UPDATE queue SET status = 'paused', updated_at = ? WHERE id = ? AND status IN ('queued', 'waiting', 'active')`, nano(m.now()), id)
 	if err == nil {
@@ -436,7 +436,7 @@ func (m *Manager) Pause(ctx context.Context, id int64) error {
 	return err
 }
 
-// Resume remet un élément suspendu dans la file.
+// Resume puts a paused item back in the queue.
 func (m *Manager) Resume(ctx context.Context, id int64) error {
 	_, err := m.exec(ctx, `UPDATE queue SET status = 'queued', next_attempt_at = 0, updated_at = ? WHERE id = ? AND status = 'paused'`, nano(m.now()), id)
 	m.poke()
@@ -444,7 +444,7 @@ func (m *Manager) Resume(ctx context.Context, id int64) error {
 	return err
 }
 
-// Prioritize passe un élément en priorité haute.
+// Prioritize gives an item high priority.
 func (m *Manager) Prioritize(ctx context.Context, id int64) error {
 	_, err := m.exec(ctx, `UPDATE queue SET priority = 1, updated_at = ? WHERE id = ?`, nano(m.now()), id)
 	m.poke()
@@ -452,7 +452,7 @@ func (m *Manager) Prioritize(ctx context.Context, id int64) error {
 	return err
 }
 
-// Retry relance un élément en erreur, compteur de tentatives remis à zéro.
+// Retry restarts a failed item, with the attempt counter reset.
 func (m *Manager) Retry(ctx context.Context, id int64) error {
 	_, err := m.exec(ctx, `UPDATE queue SET status = 'queued', attempts = 0, next_attempt_at = 0, last_error = '', updated_at = ?
 		WHERE id = ? AND status = 'error'`, nano(m.now()), id)
@@ -461,8 +461,8 @@ func (m *Manager) Retry(ctx context.Context, id int64) error {
 	return err
 }
 
-// Remove retire un élément ; deletePart supprime aussi le fichier partiel.
-// Le fichier terminé, lui, n'est jamais supprimé.
+// Remove removes an item; deletePart also deletes the partial file. A
+// finished file is never deleted.
 func (m *Manager) Remove(ctx context.Context, id int64, deletePart bool) error {
 	it, err := m.Get(ctx, id)
 	if err != nil {
@@ -475,7 +475,7 @@ func (m *Manager) Remove(ctx context.Context, id int64, deletePart bool) error {
 	if _, err := m.exec(ctx, "DELETE FROM queue WHERE id = ?", id); err != nil {
 		return err
 	}
-	// En cours : le transfert supprime lui-même le .part en s'arrêtant.
+	// In progress: the transfer deletes the partial file itself when it stops.
 	if !m.stopJob(id, reason) && deletePart {
 		m.removePart(it)
 	}
@@ -490,14 +490,13 @@ func (m *Manager) removePart(it Item) {
 	}
 	defer root.Close()
 	if err := root.Remove(partPath(it)); err != nil && !errors.Is(err, os.ErrNotExist) {
-		m.log.Warn("suppression du fichier partiel", "path", it.DestPath, "err", err)
+		m.log.Warn("deleting the partial file", "path", it.DestPath, "err", err)
 	}
 }
 
-// Run vide la file jusqu'à l'annulation de ctx. Au démarrage, les éléments
-// restés « actifs » (arrêt brutal) repassent en file : la reprise se fait par
-// le fichier .part. À l'arrêt, les transferts en cours sont interrompus
-// proprement et repassent en file.
+// Run drains the queue until ctx is cancelled. On start, items left "active"
+// (abrupt stop) are queued again: resuming relies on the partial file. On
+// stop, transfers in progress are interrupted cleanly and queued again.
 func (m *Manager) Run(ctx context.Context) error {
 	if _, err := m.exec(ctx, `UPDATE queue SET status = 'queued' WHERE status = 'active'`); err != nil {
 		return err
@@ -519,8 +518,8 @@ func (m *Manager) Run(ctx context.Context) error {
 	}
 }
 
-// schedule démarre ce qui peut l'être et renvoie la prochaine échéance à
-// surveiller (zéro = rien de programmé).
+// schedule starts what can be started and returns the next deadline to watch
+// (zero = nothing scheduled).
 func (m *Manager) schedule(ctx context.Context) time.Time {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -536,7 +535,7 @@ func (m *Manager) schedule(ctx context.Context) time.Time {
 		WHERE status IN ('queued', 'waiting') AND next_attempt_at <= ?
 		ORDER BY priority DESC, created_at, id LIMIT 500`, nano(now))
 	if err != nil {
-		m.log.Error("lecture de la file", "err", err)
+		m.log.Error("reading the queue", "err", err)
 		return now.Add(5 * time.Second)
 	}
 	var start []Item
@@ -548,7 +547,7 @@ func (m *Manager) schedule(ctx context.Context) time.Time {
 		if m.busy[it.PeerID] || m.jobs[it.ID] != nil {
 			continue
 		}
-		m.busy[it.PeerID] = true // réservé pour la suite de cette boucle
+		m.busy[it.PeerID] = true // reserved for the rest of this loop
 		start = append(start, it)
 	}
 	rows.Close()
@@ -568,12 +567,12 @@ func (m *Manager) schedule(ctx context.Context) time.Time {
 	return time.Time{}
 }
 
-// errPermanent marque une erreur sans nouvel essai (404, chemin refusé…).
+// errPermanent marks an error without retry (404, refused path…).
 type errPermanent struct{ error }
 
 func (e errPermanent) Unwrap() error { return e.error }
 
-// errRetryAfter : le pair a demandé d'attendre (503), sans compter d'échec.
+// errRetryAfter: the peer asked to wait (503), not counted as a failure.
 type errRetryAfter struct {
 	error
 	after time.Duration
@@ -602,11 +601,11 @@ func (m *Manager) runJob(ctx context.Context, it Item, j *job) {
 		m.poke()
 		m.changed()
 	}()
-	bg := context.WithoutCancel(ctx) // les mises à jour finales doivent passer même à l'arrêt
-	// Conditionnel : l'élément a pu être suspendu ou retiré entre-temps.
+	bg := context.WithoutCancel(ctx) // final updates must go through even when stopping
+	// Conditional: the item may have been paused or removed meanwhile.
 	n, err := m.exec(bg, `UPDATE queue SET status = 'active', updated_at = ? WHERE id = ? AND status IN ('queued', 'waiting')`, nano(m.now()), it.ID)
 	if err != nil {
-		m.log.Error("file", "err", err)
+		m.log.Error("queue", "err", err)
 		return
 	}
 	if n == 0 {
@@ -621,17 +620,17 @@ func (m *Manager) runJob(ctx context.Context, it Item, j *job) {
 	switch reason := stopReason(j.reason.Load()); {
 	case reason == stopPause:
 		_, _ = m.exec(bg, `UPDATE queue SET bytes_done = ?, updated_at = ? WHERE id = ?`, done, nano(now), it.ID)
-		log.Info("téléchargement suspendu", "bytes", done)
+		log.Info("download paused", "bytes", done)
 	case reason == stopRemove:
-		log.Info("téléchargement retiré")
+		log.Info("download removed")
 	case reason == stopRemovePart:
 		m.removePart(it)
-		log.Info("téléchargement retiré, fichier partiel supprimé")
+		log.Info("download removed, partial file deleted")
 	case err == nil:
 		_, _ = m.exec(bg, `UPDATE queue SET status = 'done', bytes_done = size, last_error = '', updated_at = ? WHERE id = ?`, nano(now), it.ID)
-		log.Info("téléchargement terminé", "size", it.Size)
+		log.Info("download finished", "size", it.Size)
 	case ctx.Err() != nil:
-		// Arrêt du nœud : retour en file, reprise au prochain démarrage.
+		// Node stopping: back to the queue, resumed on next start.
 		_, _ = m.exec(bg, `UPDATE queue SET status = 'queued', bytes_done = ?, updated_at = ? WHERE id = ? AND status = 'active'`, done, nano(now), it.ID)
 	default:
 		var perm errPermanent
@@ -639,32 +638,32 @@ func (m *Manager) runJob(ctx context.Context, it Item, j *job) {
 		switch err = classify(err); {
 		case errors.As(err, &perm):
 			_, _ = m.exec(bg, `UPDATE queue SET status = 'error', bytes_done = ?, last_error = ?, updated_at = ? WHERE id = ?`, done, err.Error(), nano(now), it.ID)
-			log.Warn("téléchargement en erreur", "err", err)
+			log.Warn("download failed", "err", err)
 		case errors.As(err, &ra):
 			_, _ = m.exec(bg, `UPDATE queue SET status = 'waiting', bytes_done = ?, next_attempt_at = ?, last_error = ?, updated_at = ? WHERE id = ?`,
 				done, nano(now.Add(ra.after)), err.Error(), nano(now), it.ID)
-			log.Info("pair occupé, nouvel essai programmé", "after", ra.after)
+			log.Info("peer busy, retry scheduled", "after", ra.after)
 		default:
 			wait := Backoff(it.Attempts+1, m.opt.BackoffBase, m.opt.BackoffMax)
 			_, _ = m.exec(bg, `UPDATE queue SET status = 'waiting', attempts = attempts + 1, bytes_done = ?, next_attempt_at = ?, last_error = ?, updated_at = ? WHERE id = ?`,
 				done, nano(now.Add(wait)), err.Error(), nano(now), it.ID)
-			log.Info("téléchargement interrompu, nouvel essai programmé", "after", wait, "err", err)
+			log.Info("download interrupted, retry scheduled", "after", wait, "err", err)
 		}
 	}
 }
 
-// Summary compte les éléments par statut, avec leur volume total.
+// Summary counts items per status, with their total size.
 type Summary struct {
 	Count map[Status]int   `json:"count"`
 	Bytes map[Status]int64 `json:"bytes"`
 }
 
-// Summarize renvoie les compteurs de la file.
+// Summarize returns the queue counters.
 func (m *Manager) Summarize(ctx context.Context) (Summary, error) {
 	s := Summary{Count: map[Status]int{}, Bytes: map[Status]int64{}}
 	rows, err := m.opt.Store.R.QueryContext(ctx, "SELECT status, COUNT(*), COALESCE(SUM(size), 0) FROM queue GROUP BY status")
 	if err != nil {
-		return s, fmt.Errorf("lecture de la file : %w", err)
+		return s, fmt.Errorf("reading the queue: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
@@ -672,15 +671,15 @@ func (m *Manager) Summarize(ctx context.Context) (Summary, error) {
 		var n int
 		var b int64
 		if err := rows.Scan(&st, &n, &b); err != nil {
-			return s, fmt.Errorf("lecture de la file : %w", err)
+			return s, fmt.Errorf("reading the queue: %w", err)
 		}
 		s.Count[Status(st)], s.Bytes[Status(st)] = n, b
 	}
 	return s, rows.Err()
 }
 
-// ListPage renvoie une page de la file, limitée à certains statuts (tous si
-// vide), dans l'ordre de traitement ; les terminés, du plus récent au plus ancien.
+// ListPage returns a page of the queue, limited to some statuses (all if
+// empty), in processing order; finished items newest first.
 func (m *Manager) ListPage(ctx context.Context, statuses []Status, limit, offset int) ([]Item, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 200
@@ -699,14 +698,14 @@ func (m *Manager) ListPage(ctx context.Context, statuses []Status, limit, offset
 	args = append(args, limit, offset)
 	rows, err := m.opt.Store.R.QueryContext(ctx, q, args...)
 	if err != nil {
-		return nil, fmt.Errorf("lecture de la file : %w", err)
+		return nil, fmt.Errorf("reading the queue: %w", err)
 	}
 	defer rows.Close()
 	items := []Item{}
 	for rows.Next() {
 		it, err := scanItem(rows)
 		if err != nil {
-			return nil, fmt.Errorf("lecture de la file : %w", err)
+			return nil, fmt.Errorf("reading the queue: %w", err)
 		}
 		items = append(items, it)
 	}
@@ -717,7 +716,7 @@ func (m *Manager) ListPage(ctx context.Context, statuses []Status, limit, offset
 	return items, nil
 }
 
-// Active renvoie les transferts en cours avec leur progression.
+// Active returns the transfers in progress with their progress.
 func (m *Manager) Active(ctx context.Context) ([]Item, error) {
 	return m.ListPage(ctx, []Status{Active}, 100, 0)
 }
@@ -735,7 +734,7 @@ func (m *Manager) withProgress(items []Item) {
 	}
 }
 
-// ClearDone retire de la file les éléments terminés (les fichiers restent).
+// ClearDone removes finished items from the queue (the files stay).
 func (m *Manager) ClearDone(ctx context.Context) (int64, error) {
 	n, err := m.exec(ctx, "DELETE FROM queue WHERE status = 'done'")
 	m.changed()

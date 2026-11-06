@@ -11,7 +11,7 @@ import (
 	"github.com/DB-CL/cercle/internal/wg"
 )
 
-// staticDir est un annuaire figé pour les tests.
+// staticDir is a fixed directory for tests.
 type staticDir map[netip.Addr]Member
 
 func (d staticDir) MemberByIP(ip netip.Addr) (Member, bool) {
@@ -64,7 +64,7 @@ func (n *testNode) serve(t *testing.T, circle string, dir Directory) {
 		Directory: dir,
 		Info: func(ctx context.Context) Info {
 			m, _ := MemberFrom(ctx)
-			return Info{Name: n.name, Version: "test pour " + m.Name}
+			return Info{Name: n.name, Version: "test for " + m.Name}
 		},
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -73,15 +73,15 @@ func (n *testNode) serve(t *testing.T, circle string, dir Directory) {
 	t.Cleanup(func() {
 		cancel()
 		if err := <-done; err != nil {
-			t.Errorf("arrêt du serveur : %v", err)
+			t.Errorf("server shutdown: %v", err)
 		}
 	})
 }
 
-// TestInfoThroughTunnel : alice sert l'API ; bob est membre ; carol est un pair
-// WireGuard valide d'alice mais absente de l'annuaire, donc refusée.
+// TestInfoThroughTunnel: alice serves the API; bob is a member; carol is a
+// valid WireGuard peer of alice but missing from the directory, so refused.
 func TestInfoThroughTunnel(t *testing.T) {
-	const circle = "cercle-de-test"
+	const circle = "test-circle"
 	alice := startNode(t, "alice", "10.42.0.1")
 	bob := startNode(t, "bob", "10.42.0.2")
 	carol := startNode(t, "carol", "10.42.0.3")
@@ -103,36 +103,36 @@ func TestInfoThroughTunnel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Name != "alice" || info.Version != "test pour bob" {
-		t.Fatalf("info = %+v ; l'identité de bob n'est pas arrivée jusqu'au handler", info)
+	if info.Name != "alice" || info.Version != "test for bob" {
+		t.Fatalf("info = %+v; bob's identity did not reach the handler", info)
 	}
 
 	var se *StatusError
 	_, err = NewClient(carol.dev.DialContext, circle).Info(ctx, alice.ip)
 	if !errors.As(err, &se) || se.Code != http.StatusForbidden {
-		t.Fatalf("carol, absente de l'annuaire : %v ; 403 attendu", err)
+		t.Fatalf("carol, missing from the directory: %v; want 403", err)
 	}
 
-	_, err = NewClient(bob.dev.DialContext, "autre-cercle").Info(ctx, alice.ip)
+	_, err = NewClient(bob.dev.DialContext, "other-circle").Info(ctx, alice.ip)
 	if !errors.As(err, &se) || se.Code != http.StatusForbidden {
-		t.Fatalf("mauvais cercle : %v ; 403 attendu", err)
+		t.Fatalf("wrong circle: %v; want 403", err)
 	}
 }
 
 func TestUnreachablePeerTimesOut(t *testing.T) {
 	bob := startNode(t, "bob", "10.42.0.2")
-	ghost := startNode(t, "fantôme", "10.42.0.9")
+	ghost := startNode(t, "ghost", "10.42.0.9")
 	p := ghost.peer()
-	p.Endpoint = netip.MustParseAddrPort("127.0.0.1:9") // personne n'écoute
+	p.Endpoint = netip.MustParseAddrPort("127.0.0.1:9") // nobody listens
 	if err := bob.dev.SetPeers([]wg.Peer{p}); err != nil {
 		t.Fatal(err)
 	}
 	start := time.Now()
 	_, err := NewClient(bob.dev.DialContext, "c").Info(context.Background(), ghost.ip)
 	if err == nil {
-		t.Fatal("erreur attendue")
+		t.Fatal("expected an error")
 	}
 	if el := time.Since(start); el > 13*time.Second {
-		t.Fatalf("délai de connexion non respecté : %v", el)
+		t.Fatalf("connect timeout not honored: %v", el)
 	}
 }
