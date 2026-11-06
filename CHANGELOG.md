@@ -1,9 +1,10 @@
 # Changelog
 
-## Unreleased
+## 1.1.0 (November 6, 2026)
 
 - Everything translated to English: interface, messages, logs, comments, documentation.
 - Shorter README; documentation folder removed.
+- Internal rename of member records ("fiche" to "record"), with a database migration applied on start. Wire format unchanged: compatible with 1.0.0 nodes.
 
 ## 1.0.0 (November 6, 2026)
 
