@@ -470,7 +470,8 @@ func (s *Server) eventsStream(w http.ResponseWriter, r *http.Request) {
 func (s *Server) fail(w http.ResponseWriter, err error) {
 	code := http.StatusBadRequest
 	switch {
-	case errors.Is(err, membership.ErrInviteUsed), errors.Is(err, membership.ErrAlreadyInCircle):
+	case errors.Is(err, membership.ErrInviteUsed), errors.Is(err, membership.ErrAlreadyInCircle),
+		errors.Is(err, membership.ErrInviteAddressTaken):
 		code = http.StatusConflict
 	case errors.Is(err, membership.ErrInviteExpired):
 		code = http.StatusGone

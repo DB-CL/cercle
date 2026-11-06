@@ -116,6 +116,8 @@ func (c *Client) Join(ctx context.Context, inviter netip.Addr, req membership.Jo
 			return resp, membership.ErrInviteExpired
 		case http.StatusForbidden:
 			return resp, membership.ErrInviteUnknown
+		case http.StatusUnprocessableEntity:
+			return resp, membership.ErrInviteAddressTaken
 		}
 	}
 	return resp, err

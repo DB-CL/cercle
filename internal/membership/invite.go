@@ -26,6 +26,9 @@ var (
 	ErrInviteUsed    = errors.New("this invitation code has already been used")
 	ErrInviteExpired = errors.New("this invitation code has expired")
 	ErrBadCode       = errors.New("unreadable invitation code: check that it was pasted in full")
+	// ErrInviteAddressTaken: another member took the code's address in the
+	// meantime (two invitations by two members drew the same one).
+	ErrInviteAddressTaken = errors.New("the address of this invitation code has been taken in the meantime: ask for a new code")
 )
 
 // Code is the content of an invitation code. Its JSON field names are part of
@@ -101,7 +104,7 @@ func (s *Service) NewInvite(ctx context.Context, ttl time.Duration, endpoints []
 		return Code{}, Invite{}, ErrNotInCircle
 	}
 	used := s.usedLocked(ctx)
-	assigned, err := randomFree(s.subnet, used)
+	assigned, err := s.pickAddress(s.subnet, used)
 	if err != nil {
 		return Code{}, Invite{}, err
 	}
@@ -268,7 +271,22 @@ func (s *Service) AcceptJoin(ctx context.Context, tempIP netip.Addr, req JoinReq
 		s.mu.Unlock()
 		return JoinResponse{}, errors.New("this node is already a member of the circle")
 	}
+	taken := false
+	for _, d := range s.members {
+		if d.body.TunnelIP == assigned {
+			taken = true
+		}
+	}
 	s.mu.Unlock()
+	if taken {
+		// Admitting it would cut the new member off: every node routes the
+		// address to the member already holding it. The code becomes useless.
+		if _, err := s.st.W.ExecContext(ctx, "UPDATE invites SET cancelled = 1 WHERE id = ?", id); err != nil {
+			return JoinResponse{}, fmt.Errorf("cancelling the invitation: %w", err)
+		}
+		s.log.Warn("join refused: the invitation's address has been taken by another member", "tunnel_ip", assigned)
+		return JoinResponse{}, ErrInviteAddressTaken
+	}
 	var b Body
 	if len(req.SignPub) != ed25519.PublicKeySize || !verify(req.SignPub, ctxBody, req.Body, req.BodySig) ||
 		json.Unmarshal(req.Body, &b) != nil || b.NodeID != req.NodeID || b.Circle != circle || b.TunnelIP != assigned {

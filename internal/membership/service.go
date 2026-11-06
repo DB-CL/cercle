@@ -57,7 +57,9 @@ type Service struct {
 	log *slog.Logger
 	now func() time.Time
 
-	joinMu  sync.Mutex // one join at a time: a code admits a single member
+	joinMu      sync.Mutex                                                  // one join at a time: a code admits a single member
+	pickAddress func(netip.Prefix, map[netip.Addr]bool) (netip.Addr, error) // address of a new invitation, under mu
+
 	mu      sync.Mutex
 	circle  string
 	subnet  netip.Prefix
@@ -76,7 +78,7 @@ func New(ctx context.Context, st *store.Store, id Identity, log *slog.Logger) (*
 	if log == nil {
 		log = slog.Default()
 	}
-	s := &Service{st: st, id: id, log: log.With("module", "membership"), now: time.Now,
+	s := &Service{st: st, id: id, log: log.With("module", "membership"), now: time.Now, pickAddress: randomFree,
 		members: map[string]decoded{}, revoked: map[string]revocation{}}
 	var subnet string
 	err := st.R.QueryRowContext(ctx, "SELECT circle_id, subnet FROM circle WHERE id = 1").Scan(&s.circle, &subnet)
@@ -531,6 +533,17 @@ func (s *Service) usedLocked(ctx context.Context) map[netip.Addr]bool {
 		}
 	}
 	return used
+}
+
+// SetInviteAddress makes the next invitation use addr, even if taken. Tests
+// use it to force two members' invitations onto the same address.
+func (s *Service) SetInviteAddress(addr netip.Addr) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pickAddress = func(subnet netip.Prefix, used map[netip.Addr]bool) (netip.Addr, error) {
+		s.pickAddress = randomFree
+		return addr, nil
+	}
 }
 
 // randomFree picks a random free address in the subnet: two simultaneous

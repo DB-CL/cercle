@@ -19,6 +19,7 @@ import (
 	"slices"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/DB-CL/cercle/internal/buildinfo"
@@ -68,6 +69,11 @@ type Node struct {
 	recMu   sync.Mutex // one reconciliation at a time
 	rr      map[string]int
 	revoked bool
+	routed  map[string]netip.Addr // node_id → address routed to it in WireGuard, under recMu
+	warned  map[string]time.Time  // conflict losers last told to change address, under recMu
+
+	readdressAt atomic.Int64 // Unix ns: the tunnel moves to the new address after this
+	noGossip    atomic.Bool  // tests: no gossip in either direction
 
 	dnsMu sync.Mutex
 	dns   map[string]dnsEntry
@@ -324,14 +330,40 @@ func (n *Node) peerByID(id string) (transfer.Peer, bool) {
 }
 
 func (n *Node) handleGossip(ctx context.Context, from peerapi.Member, t membership.Table) (membership.Table, error) {
+	if n.noGossip.Load() {
+		return membership.Table{}, errors.New("gossip paused")
+	}
 	changed, err := n.ms.Merge(ctx, t)
 	if err != nil {
 		return membership.Table{}, err
 	}
 	if changed {
+		// If this node just learned it lost its address, it picks a new one now
+		// and answers with it: the caller may be about to route the old
+		// address to the older member, and could not hear from us afterwards.
+		n.resolveConflict(ctx)
 		n.poke()
 	}
 	return n.ms.Table(), nil
+}
+
+// readdressGrace is how long the tunnel keeps its old address after the node
+// lost it: enough for the members still routing it here to receive the new one.
+const readdressGrace = 10 * time.Second
+
+// resolveConflict picks a new address if an older member holds this node's
+// one. The record changes at once; the tunnel follows after readdressGrace.
+func (n *Node) resolveConflict(ctx context.Context) {
+	ip, err := n.ms.ResolveConflict(ctx)
+	if err != nil {
+		n.log.Error("address conflict", "err", err)
+		return
+	}
+	if !ip.IsValid() {
+		return
+	}
+	n.readdressAt.Store(time.Now().Add(readdressGrace).UnixNano())
+	time.AfterFunc(readdressGrace+100*time.Millisecond, n.poke)
 }
 
 func (n *Node) acceptJoin(ctx context.Context, tempIP netip.Addr, req membership.JoinRequest) (membership.JoinResponse, error) {
@@ -449,7 +481,8 @@ func (n *Node) joinWithTempKey(ctx context.Context, code membership.Code, req me
 			switch {
 			case err == nil:
 				return resp, nil
-			case errors.Is(err, membership.ErrInviteUsed), errors.Is(err, membership.ErrInviteExpired), errors.Is(err, membership.ErrInviteUnknown):
+			case errors.Is(err, membership.ErrInviteUsed), errors.Is(err, membership.ErrInviteExpired), errors.Is(err, membership.ErrInviteUnknown),
+				errors.Is(err, membership.ErrInviteAddressTaken):
 				return membership.JoinResponse{}, err
 			}
 			n.log.Info("inviter unreachable through this endpoint", "endpoint", ep, "err", err)
@@ -506,19 +539,19 @@ func (n *Node) reconcile(ctx context.Context) {
 	if dev == nil || ctx.Err() != nil {
 		return
 	}
-	if ip, err := n.ms.ResolveConflict(ctx); err != nil {
-		n.log.Error("address conflict", "err", err)
-	} else if ip.IsValid() {
+	n.resolveConflict(ctx)
+	self, ok := n.ms.Self()
+	if !ok {
+		return
+	}
+	if dev.Address() != self.TunnelIP && !self.Revoked && time.Now().UnixNano() >= n.readdressAt.Load() {
 		n.stopDevice()
-		if err := n.startDevice(ip); err != nil {
+		if err := n.startDevice(self.TunnelIP); err != nil {
 			n.log.Error("restarting the tunnel", "err", err)
 			return
 		}
 		dev = n.device()
-	}
-	self, ok := n.ms.Self()
-	if !ok {
-		return
+		n.poke() // the others learn the new address sooner
 	}
 	if self.Revoked {
 		if !n.revoked {
@@ -537,6 +570,36 @@ func (n *Node) reconcile(ctx context.Context) {
 	}
 	now := time.Now()
 	members := n.ms.Members()
+	peers, observed := n.buildPeers(ctx, members, status, now)
+	if n.warnLosers(ctx, dev, self, members, peers, status, now) {
+		members = n.ms.Members()
+		peers, observed = n.buildPeers(ctx, members, status, now)
+	}
+	if err := dev.SetPeers(peers); err != nil {
+		n.log.Error("WireGuard reconciliation", "err", err)
+	}
+	n.routed = map[string]netip.Addr{}
+	for _, p := range peers {
+		n.routed[p.PublicKey.String()] = p.TunnelIP
+	}
+	changed, err := n.ms.UpdateSelf(ctx, func(b *membership.Body) {
+		b.Announced = slices.Clone(n.cfg.WGPublicEndpoints)
+		if len(observed) == 0 {
+			b.Observed = nil
+		} else {
+			b.Observed = observed
+		}
+	})
+	if err != nil {
+		n.log.Error("updating the record", "err", err)
+	} else if changed {
+		n.poke()
+	}
+}
+
+// buildPeers turns the member table into the WireGuard peer list, and notes
+// the endpoints under which the online members are seen.
+func (n *Node) buildPeers(ctx context.Context, members []membership.Member, status map[wg.Key]wg.PeerStatus, now time.Time) ([]wg.Peer, map[string]string) {
 	var peers []wg.Peer
 	observed := map[string]string{}
 	for _, m := range members {
@@ -558,22 +621,65 @@ func (n *Node) reconcile(ctx context.Context) {
 			peers = append(peers, wg.Peer{PublicKey: key, TunnelIP: inv.TempIP})
 		}
 	}
-	if err := dev.SetPeers(peers); err != nil {
-		n.log.Error("WireGuard reconciliation", "err", err)
+	return peers, observed
+}
+
+// warnLosers handles address conflicts between two other members. Once a
+// node routes a contested address to the older member, the younger one can
+// no longer reach it, so it could never learn that it must move. Before that,
+// this node routes the address to the loser one last time and sends it the
+// table: the loser picks a new address and answers with it (handleGossip).
+// Only the nodes the loser depends on do it: those that routed it until now,
+// and its inviter during its first hour. Returns true if the table changed.
+func (n *Node) warnLosers(ctx context.Context, dev *wg.Device, self membership.Member, members []membership.Member,
+	peers []wg.Peer, status map[wg.Key]wg.PeerStatus, now time.Time) bool {
+	if n.warned == nil {
+		n.warned = map[string]time.Time{}
 	}
-	changed, err := n.ms.UpdateSelf(ctx, func(b *membership.Body) {
-		b.Announced = slices.Clone(n.cfg.WGPublicEndpoints)
-		if len(observed) == 0 {
-			b.Observed = nil
-		} else {
-			b.Observed = observed
+	changed := false
+	for _, m := range members {
+		if !m.Conflict || m.Self || m.Revoked {
+			continue
 		}
-	})
-	if err != nil {
-		n.log.Error("updating the record", "err", err)
-	} else if changed {
-		n.poke()
+		routedHere := n.routed[m.NodeID] == m.TunnelIP
+		myInvitee := m.InvitedBy == self.NodeID && now.Sub(m.JoinedAt) < time.Hour
+		if !routedHere && !myInvitee || now.Sub(n.warned[m.NodeID]) < 30*time.Second {
+			continue
+		}
+		key, err := wg.ParseKey(m.NodeID)
+		if err != nil {
+			continue
+		}
+		n.warned[m.NodeID] = now
+		tmp := []wg.Peer{{PublicKey: key, TunnelIP: m.TunnelIP, Endpoint: n.nextEndpoint(ctx, m, members, status[key].Online(now))}}
+		for _, p := range peers {
+			if p.TunnelIP != m.TunnelIP {
+				tmp = append(tmp, p)
+			}
+		}
+		if err := dev.SetPeers(tmp); err != nil {
+			n.log.Error("WireGuard reconciliation", "err", err)
+			continue
+		}
+		circle, _ := n.ms.Circle()
+		rctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		t, err := n.client.WithCircle(circle).Gossip(rctx, m.TunnelIP, n.ms.Table())
+		cancel()
+		if err != nil {
+			n.log.Info("address conflict: could not tell the younger member to move", "member", m.DisplayName, "tunnel_ip", m.TunnelIP, "err", err)
+			continue
+		}
+		c, err := n.ms.Merge(ctx, t)
+		if err != nil {
+			n.log.Error("merging a table", "peer", m.DisplayName, "err", err)
+			continue
+		}
+		if moved, ok := n.ms.Member(m.NodeID); ok && !moved.Conflict {
+			n.log.Info("address conflict: the younger member moved", "member", m.DisplayName, "old", m.TunnelIP, "new", moved.TunnelIP)
+		}
+		changed = changed || c
 	}
+	return changed
 }
 
 // nextEndpoint picks the endpoint to try for a peer: its announced
@@ -614,7 +720,7 @@ func (n *Node) nextEndpoint(ctx context.Context, m membership.Member, members []
 func (n *Node) gossipRound(ctx context.Context) {
 	dev := n.device()
 	self, ok := n.ms.Self()
-	if dev == nil || !ok || self.Revoked || ctx.Err() != nil {
+	if dev == nil || !ok || self.Revoked || ctx.Err() != nil || n.noGossip.Load() {
 		return
 	}
 	online := map[string]bool{}

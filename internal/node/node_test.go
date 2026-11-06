@@ -326,3 +326,137 @@ func TestEnqueueWhileRecordChanges(t *testing.T) {
 		t.Errorf("%d items queued, want 3000 (no duplicates)", n)
 	}
 }
+
+// circleOfTwo founds a circle at alice and brings bob in.
+func circleOfTwo(t *testing.T) (alice, bob *tnode) {
+	t.Helper()
+	ctx := context.Background()
+	alice, bob = newTNode(t, "alice"), newTNode(t, "bob")
+	if err := alice.n.CreateCircle(ctx); err != nil {
+		t.Fatal(err)
+	}
+	code, _, err := alice.n.Invite(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bob.n.Join(ctx, code); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, 30*time.Second, "bob reaches alice", func() bool { _, err := info(bob, alice.self()); return err == nil })
+	return alice, bob
+}
+
+// freeAddr returns an address of the circle no member uses.
+func freeAddr(t *testing.T, nodes ...*tnode) netip.Addr {
+	t.Helper()
+	for ip := netip.MustParseAddr("10.42.0.77"); ; ip = ip.Next() {
+		taken := false
+		for _, tn := range nodes {
+			taken = taken || tn.self().TunnelIP == ip
+		}
+		if !taken {
+			return ip
+		}
+	}
+}
+
+// TestInviteAddressTaken: a code whose address another member took in the
+// meantime is refused with a clear message, instead of cutting off the new
+// member.
+func TestInviteAddressTaken(t *testing.T) {
+	ctx := context.Background()
+	alice, bob := circleOfTwo(t)
+	carol, dave := newTNode(t, "carol"), newTNode(t, "dave")
+	ip := freeAddr(t, alice, bob)
+	alice.n.Membership().SetInviteAddress(ip)
+	bob.n.Membership().SetInviteAddress(ip)
+	codeA, _, err := alice.n.Invite(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	codeB, _, err := bob.n.Invite(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := carol.n.Join(ctx, codeA); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, 10*time.Second, "bob knows carol", func() bool { return knows(bob, carol.id()) })
+	if err := dave.n.Join(ctx, codeB); !errors.Is(err, membership.ErrInviteAddressTaken) {
+		t.Fatalf("join with a taken address: %v", err)
+	}
+	if dave.n.TunnelUp() {
+		t.Error("dave's tunnel started despite the refusal")
+	}
+	code, _, err := bob.n.Invite(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dave.n.Join(ctx, code); err != nil {
+		t.Fatalf("join with a new code: %v", err)
+	}
+	eventually(t, 30*time.Second, "dave reaches carol", func() bool { _, err := info(dave, carol.self()); return err == nil })
+}
+
+// TestSimultaneousAddressConflict: two members invite at the same time and
+// both codes carry the same address (the end-to-end failure of 2026-11-06).
+// The younger member must move to a free address and everyone must reach
+// everyone.
+func TestSimultaneousAddressConflict(t *testing.T) {
+	ctx := context.Background()
+	alice, bob := circleOfTwo(t)
+	carol, dave := newTNode(t, "carol"), newTNode(t, "dave")
+	ip := freeAddr(t, alice, bob)
+	alice.n.Membership().SetInviteAddress(ip)
+	bob.n.Membership().SetInviteAddress(ip)
+	codeA, _, err := alice.n.Invite(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	codeB, _, err := bob.n.Invite(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No gossip between alice and bob: neither learns the other's new member
+	// before both are admitted.
+	alice.n.noGossip.Store(true)
+	bob.n.noGossip.Store(true)
+	if err := carol.n.Join(ctx, codeA); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(10 * time.Millisecond) // carol is the older one
+	if err := dave.n.Join(ctx, codeB); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(time.Second) // each inviter routes its new member
+	alice.n.noGossip.Store(false)
+	bob.n.noGossip.Store(false)
+	alice.n.poke()
+	bob.n.poke()
+
+	all := []*tnode{alice, bob, carol, dave}
+	d := eventually(t, 90*time.Second, "everyone reaches everyone", func() bool {
+		for _, a := range all {
+			for _, b := range all {
+				if a == b {
+					continue
+				}
+				if _, err := info(a, b.self()); err != nil {
+					return false
+				}
+			}
+		}
+		return true
+	})
+	t.Logf("conflict settled in %v", d.Round(time.Millisecond))
+	if carol.self().TunnelIP != ip || dave.self().TunnelIP == ip {
+		t.Errorf("carol at %v, dave at %v: the older member must keep %v", carol.self().TunnelIP, dave.self().TunnelIP, ip)
+	}
+	for _, tn := range all {
+		for _, m := range tn.n.Membership().Members() {
+			if m.Conflict {
+				t.Errorf("%s still sees a conflict on %s", tn.name, m.Name)
+			}
+		}
+	}
+}

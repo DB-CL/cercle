@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.1 (November 6, 2026)
+
+- Fix: when two invitations by two different members drew the same tunnel address, the member who joined second could end up cut off from the whole circle, for good. Now:
+  - a code whose address was taken in the meantime is refused with a clear message ("ask for a new code");
+  - when both members join at the same time, the nodes tell the younger one to move before routing the address to the older one, and it moves to a free address within seconds.
+
 ## 1.1.0 (November 6, 2026)
 
 - Everything translated to English: interface, messages, logs, comments, documentation.

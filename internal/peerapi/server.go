@@ -153,6 +153,8 @@ func (s *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusGone, err.Error())
 	case errors.Is(err, membership.ErrInviteUnknown):
 		writeError(w, http.StatusForbidden, err.Error())
+	case errors.Is(err, membership.ErrInviteAddressTaken):
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
 	default:
 		s.log().Warn("join refused", "err", err)
 		writeError(w, http.StatusBadRequest, err.Error())
