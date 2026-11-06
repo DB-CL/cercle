@@ -1,6 +1,6 @@
 # Changements
 
-## 1.0.0 (à publier)
+## 1.0.0 (6 novembre 2026)
 
 Première version.
 
